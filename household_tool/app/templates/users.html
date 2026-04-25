@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Benutzerverwaltung | Household Tool{% endblock %}
+{% block content %}
+<h1>Benutzerverwaltung</h1>
+
+<section class="card">
+  <h2>Benutzer anlegen</h2>
+  <form method="post" action="/users" class="form-grid">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+
+    <label for="username">Benutzername</label>
+    <input id="username" name="username" required>
+
+    <label for="password">Passwort</label>
+    <input id="password" name="password" type="password" required>
+
+    <label for="role">Rolle</label>
+    <select id="role" name="role">
+      <option value="user">user</option>
+      <option value="admin">admin</option>
+    </select>
+
+    <button type="submit">Benutzer erstellen</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Benutzerliste</h2>
+  {% if users %}
+    <table>
+      <thead>
+        <tr>
+          <th>Benutzername</th>
+          <th>Rolle</th>
+          <th>Angelegt</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for account in users %}
+          <tr>
+            <td>{{ account.username }}</td>
+            <td>{{ account.role }}</td>
+            <td>{{ account.created_at }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>Noch keine Benutzer vorhanden.</p>
+  {% endif %}
+</section>
+{% endblock %}

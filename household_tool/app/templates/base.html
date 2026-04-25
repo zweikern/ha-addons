@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Household Tool{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container topbar-inner">
+        <div class="brand">Household Tool</div>
+        {% if user %}
+          <nav class="nav">
+            <a href="/dashboard">Dashboard</a>
+            <a href="/projects">Projekte</a>
+            {% if user.role == 'admin' %}
+              <a href="/users">Benutzer</a>
+            {% endif %}
+            <a href="/logout">Logout ({{ user.username }})</a>
+          </nav>
+        {% endif %}
+      </div>
+    </header>
+
+    <main class="container">
+      {% if error %}
+        <div class="alert">Hinweis: {{ error }}</div>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

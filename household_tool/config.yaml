@@ -1,0 +1,22 @@
+name: Household Tool
+slug: household_tool
+version: 0.1.0
+description: Kleines internes Haushalts-Intranet (MVP) mit Projekten und Aufgaben.
+startup: services
+boot: auto
+arch:
+  - aarch64
+  - amd64
+init: false
+webui: http://[HOST]:[PORT:8099]
+ports:
+  8099/tcp: 8099
+ports_description:
+  8099/tcp: Web UI
+map: []
+options:
+  admin_username: admin
+  admin_password: ""
+schema:
+  admin_username: str
+  admin_password: password?

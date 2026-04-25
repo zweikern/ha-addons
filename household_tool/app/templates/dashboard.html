@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Dashboard | Household Tool{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+<div class="stats-grid">
+  <article class="card stat"><h2>Benutzer</h2><p>{{ stats.users_total }}</p></article>
+  <article class="card stat"><h2>Projekte</h2><p>{{ stats.projects_total }}</p></article>
+  <article class="card stat"><h2>Aufgaben gesamt</h2><p>{{ stats.tasks_total }}</p></article>
+  <article class="card stat"><h2>Offene Aufgaben</h2><p>{{ stats.open_tasks }}</p></article>
+</div>
+{% endblock %}

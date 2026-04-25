@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Projekt {{ project.name }} | Household Tool{% endblock %}
+{% block content %}
+<a href="/projects" class="back-link">&larr; Zurück zur Projektliste</a>
+<h1>{{ project.name }}</h1>
+<p>{{ project.description }}</p>
+
+<section class="card">
+  <h2>Aufgabe anlegen</h2>
+  <form method="post" action="/projects/{{ project.id }}/tasks" class="form-grid">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+
+    <label for="title">Titel</label>
+    <input id="title" name="title" required>
+
+    <label for="description">Beschreibung</label>
+    <textarea id="description" name="description" rows="3"></textarea>
+
+    <label for="status">Status</label>
+    <select id="status" name="status">
+      <option value="open">offen</option>
+      <option value="in_progress">in Arbeit</option>
+      <option value="done">erledigt</option>
+    </select>
+
+    <label for="assignee_id">Zuständig (optional)</label>
+    <select id="assignee_id" name="assignee_id">
+      <option value="">-</option>
+      {% for account in users %}
+        <option value="{{ account.id }}">{{ account.username }}</option>
+      {% endfor %}
+    </select>
+
+    <button type="submit">Aufgabe erstellen</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Aufgaben</h2>
+  {% if tasks %}
+    <table>
+      <thead>
+        <tr>
+          <th>Titel</th>
+          <th>Beschreibung</th>
+          <th>Status</th>
+          <th>Zuständig</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for task in tasks %}
+          <tr>
+            <td>{{ task.title }}</td>
+            <td>{{ task.description }}</td>
+            <td>
+              {% if task.status == 'open' %}offen{% endif %}
+              {% if task.status == 'in_progress' %}in Arbeit{% endif %}
+              {% if task.status == 'done' %}erledigt{% endif %}
+            </td>
+            <td>{{ task.assignee_name or '-' }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>Für dieses Projekt gibt es noch keine Aufgaben.</p>
+  {% endif %}
+</section>
+{% endblock %}

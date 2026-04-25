@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Projekte | Household Tool{% endblock %}
+{% block content %}
+<h1>Projekte</h1>
+
+<section class="card">
+  <h2>Projekt anlegen</h2>
+  <form method="post" action="/projects" class="form-grid">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+
+    <label for="name">Name</label>
+    <input id="name" name="name" required>
+
+    <label for="description">Beschreibung</label>
+    <textarea id="description" name="description" rows="3"></textarea>
+
+    <button type="submit">Projekt erstellen</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Projektliste</h2>
+  {% if projects %}
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Beschreibung</th>
+          <th>Ersteller</th>
+          <th>Aufgaben</th>
+          <th>Aktion</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for project in projects %}
+          <tr>
+            <td>{{ project.name }}</td>
+            <td>{{ project.description }}</td>
+            <td>{{ project.creator_name or '-' }}</td>
+            <td>{{ project.task_count }}</td>
+            <td><a href="/projects/{{ project.id }}">Details</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>Noch keine Projekte vorhanden.</p>
+  {% endif %}
+</section>
+{% endblock %}
