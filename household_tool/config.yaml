@@ -1,6 +1,6 @@
 name: Household Tool
 slug: household_tool
-version: 0.1.0
+version: 0.1.1
 description: Kleines internes Haushalts-Intranet (MVP) mit Projekten und Aufgaben.
 startup: services
 boot: auto
