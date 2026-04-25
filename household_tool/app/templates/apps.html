@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Apps | Household Tool{% endblock %}
+{% block content %}
+<h1>Haushalt Apps</h1>
+<p class="lede">Wähle eine Web-App aus der Household Tool Plattform.</p>
+
+<section class="app-grid">
+  <article class="card app-card app-card--active">
+    <h2>Projekte</h2>
+    <p>Projekt- und Aufgabenverwaltung im Stil der Todo-Webapp inklusive Sharing.</p>
+    <a class="app-link" href="/projects">App öffnen</a>
+  </article>
+
+  <article class="card app-card">
+    <h2>Einkauf</h2>
+    <p>Geplant. Platzhalter für zukünftige Haushalts-App.</p>
+    <span class="chip">Bald verfügbar</span>
+  </article>
+
+  <article class="card app-card">
+    <h2>Haushaltsplanung</h2>
+    <p>Geplant. Platzhalter für Ressourcen- und Terminplanung.</p>
+    <span class="chip">Bald verfügbar</span>
+  </article>
+</section>
+
+<section class="card">
+  <h2>Plattform-Status</h2>
+  <div class="stats-grid">
+    <article class="stat"><h3>Benutzer</h3><p>{{ stats.users_total }}</p></article>
+    <article class="stat"><h3>Projekte</h3><p>{{ stats.projects_total }}</p></article>
+    <article class="stat"><h3>Aufgaben</h3><p>{{ stats.tasks_total }}</p></article>
+    <article class="stat"><h3>Offen</h3><p>{{ stats.open_tasks }}</p></article>
+  </div>
+</section>
+{% endblock %}

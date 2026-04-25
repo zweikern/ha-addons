@@ -4,22 +4,22 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-DATA_DIR = Path("/data")
-DB_PATH = DATA_DIR / "app.db"
+DATA_DIR = Path('/data')
+DB_PATH = DATA_DIR / 'app.db'
 
 
 def get_connection() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute('PRAGMA foreign_keys = ON')
     return conn
 
 
 def init_db() -> None:
     with get_connection() as conn:
         conn.executescript(
-            """
+            '''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL UNIQUE,
@@ -48,24 +48,35 @@ def init_db() -> None:
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
                 FOREIGN KEY(assignee_id) REFERENCES users(id)
             );
-            """
+
+            CREATE TABLE IF NOT EXISTS project_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                role TEXT NOT NULL DEFAULT 'member' CHECK(role IN ('member', 'manager')),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(project_id, user_id),
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            '''
         )
 
 
 def get_user_by_username(username: str) -> sqlite3.Row | None:
     with get_connection() as conn:
-        return conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        return conn.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
 
 
 def get_user_by_id(user_id: int) -> sqlite3.Row | None:
     with get_connection() as conn:
-        return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return conn.execute('SELECT * FROM users WHERE id = ?', (user_id,)).fetchone()
 
 
 def list_users() -> list[sqlite3.Row]:
     with get_connection() as conn:
         return conn.execute(
-            "SELECT id, username, role, created_at FROM users ORDER BY username ASC"
+            'SELECT id, username, role, created_at FROM users ORDER BY username ASC'
         ).fetchall()
 
 
@@ -73,7 +84,7 @@ def create_user(username: str, password_hash: str, role: str) -> bool:
     try:
         with get_connection() as conn:
             conn.execute(
-                "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+                'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
                 (username, password_hash, role),
             )
         return True
@@ -90,13 +101,13 @@ def ensure_admin_account(username: str, password_hash: str) -> bool:
             return False
 
         existing = conn.execute(
-            "SELECT id FROM users WHERE username = ?", (username,)
+            'SELECT id FROM users WHERE username = ?', (username,)
         ).fetchone()
 
         if existing:
             conn.execute(
                 "UPDATE users SET password_hash = ?, role = 'admin' WHERE id = ?",
-                (password_hash, existing["id"]),
+                (password_hash, existing['id']),
             )
         else:
             conn.execute(
@@ -109,12 +120,12 @@ def ensure_admin_account(username: str, password_hash: str) -> bool:
 def ensure_admin_credentials(username: str, password_hash: str) -> tuple[bool, bool]:
     with get_connection() as conn:
         existing = conn.execute(
-            "SELECT id FROM users WHERE username = ?", (username,)
+            'SELECT id FROM users WHERE username = ?', (username,)
         ).fetchone()
         if existing:
             conn.execute(
                 "UPDATE users SET password_hash = ?, role = 'admin' WHERE id = ?",
-                (password_hash, existing["id"]),
+                (password_hash, existing['id']),
             )
             return False, True
 
@@ -128,37 +139,62 @@ def ensure_admin_credentials(username: str, password_hash: str) -> tuple[bool, b
 def create_project(name: str, description: str, created_by: int | None) -> int:
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO projects (name, description, created_by) VALUES (?, ?, ?)",
+            'INSERT INTO projects (name, description, created_by) VALUES (?, ?, ?)',
             (name, description, created_by),
         )
         return int(cur.lastrowid)
 
 
-def list_projects() -> list[sqlite3.Row]:
+def list_accessible_projects(user_id: int) -> list[sqlite3.Row]:
     with get_connection() as conn:
         return conn.execute(
-            """
-            SELECT p.id, p.name, p.description, p.created_at, u.username AS creator_name,
-                   COUNT(t.id) AS task_count
+            '''
+            SELECT
+                p.id,
+                p.name,
+                p.description,
+                p.created_by,
+                p.created_at,
+                owner.username AS owner_name,
+                COALESCE(pm.role, '') AS membership_role,
+                CASE WHEN p.created_by = ? THEN 'own' ELSE 'shared' END AS access_type,
+                (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_count,
+                (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status != 'done') AS open_task_count
             FROM projects p
-            LEFT JOIN users u ON u.id = p.created_by
-            LEFT JOIN tasks t ON t.project_id = p.id
-            GROUP BY p.id
-            ORDER BY p.created_at DESC
-            """
+            LEFT JOIN users owner ON owner.id = p.created_by
+            LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
+            WHERE p.created_by = ? OR pm.user_id = ?
+            ORDER BY
+                CASE WHEN p.created_by = ? THEN 0 ELSE 1 END,
+                p.created_at DESC,
+                p.id DESC
+            ''',
+            (user_id, user_id, user_id, user_id, user_id),
         ).fetchall()
 
 
-def get_project(project_id: int) -> sqlite3.Row | None:
+def get_accessible_project(project_id: int, user_id: int) -> sqlite3.Row | None:
     with get_connection() as conn:
         return conn.execute(
-            """
-            SELECT p.id, p.name, p.description, p.created_at, u.username AS creator_name
+            '''
+            SELECT
+                p.id,
+                p.name,
+                p.description,
+                p.created_by,
+                p.created_at,
+                owner.username AS owner_name,
+                COALESCE(pm.role, '') AS membership_role,
+                CASE WHEN p.created_by = ? THEN 'own' ELSE 'shared' END AS access_type,
+                (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_count,
+                (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status != 'done') AS open_task_count
             FROM projects p
-            LEFT JOIN users u ON u.id = p.created_by
-            WHERE p.id = ?
-            """,
-            (project_id,),
+            LEFT JOIN users owner ON owner.id = p.created_by
+            LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
+            WHERE p.id = ? AND (p.created_by = ? OR pm.user_id = ?)
+            LIMIT 1
+            ''',
+            (user_id, user_id, project_id, user_id, user_id),
         ).fetchone()
 
 
@@ -171,40 +207,152 @@ def create_task(
 ) -> int:
     with get_connection() as conn:
         cur = conn.execute(
-            """
+            '''
             INSERT INTO tasks (project_id, title, description, status, assignee_id)
             VALUES (?, ?, ?, ?, ?)
-            """,
+            ''',
             (project_id, title, description, status, assignee_id),
         )
         return int(cur.lastrowid)
 
 
-def list_project_tasks(project_id: int) -> list[sqlite3.Row]:
+def list_project_tasks(project_id: int, view: str = 'all') -> list[sqlite3.Row]:
+    where = 'WHERE t.project_id = ?'
+    params: list[Any] = [project_id]
+
+    if view == 'open':
+        where += " AND t.status IN ('open', 'in_progress')"
+    elif view == 'done':
+        where += " AND t.status = 'done'"
+
+    query = f'''
+        SELECT
+            t.id,
+            t.project_id,
+            t.title,
+            t.description,
+            t.status,
+            t.created_at,
+            t.assignee_id,
+            u.username AS assignee_name
+        FROM tasks t
+        LEFT JOIN users u ON u.id = t.assignee_id
+        {where}
+        ORDER BY
+            CASE WHEN t.status = 'done' THEN 1 ELSE 0 END,
+            t.created_at DESC,
+            t.id DESC
+    '''
+
     with get_connection() as conn:
-        return conn.execute(
-            """
-            SELECT t.id, t.title, t.description, t.status, t.created_at, u.username AS assignee_name
+        return conn.execute(query, tuple(params)).fetchall()
+
+
+def update_task_status_if_accessible(task_id: int, user_id: int, status: str) -> int | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            '''
+            SELECT t.project_id
             FROM tasks t
-            LEFT JOIN users u ON u.id = t.assignee_id
-            WHERE t.project_id = ?
-            ORDER BY t.created_at DESC
-            """,
+            JOIN projects p ON p.id = t.project_id
+            LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
+            WHERE t.id = ? AND (p.created_by = ? OR pm.user_id = ?)
+            LIMIT 1
+            ''',
+            (user_id, task_id, user_id, user_id),
+        ).fetchone()
+        if not row:
+            return None
+
+        conn.execute(
+            'UPDATE tasks SET status = ? WHERE id = ?',
+            (status, task_id),
+        )
+        return int(row['project_id'])
+
+
+def list_project_members(project_id: int) -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        owner = conn.execute(
+            '''
+            SELECT u.id, u.username, u.role AS account_role, 'owner' AS project_role, p.created_at AS added_at
+            FROM projects p
+            JOIN users u ON u.id = p.created_by
+            WHERE p.id = ?
+            ''',
+            (project_id,),
+        ).fetchone()
+
+        members = conn.execute(
+            '''
+            SELECT u.id, u.username, u.role AS account_role, pm.role AS project_role, pm.created_at AS added_at
+            FROM project_members pm
+            JOIN users u ON u.id = pm.user_id
+            WHERE pm.project_id = ?
+            ORDER BY pm.created_at ASC
+            ''',
             (project_id,),
         ).fetchall()
+
+    rows: list[sqlite3.Row] = []
+    if owner:
+        rows.append(owner)
+    rows.extend(members)
+    return rows
+
+
+def add_project_member(project_id: int, user_id: int, role: str) -> bool:
+    try:
+        with get_connection() as conn:
+            owner = conn.execute(
+                'SELECT created_by FROM projects WHERE id = ? LIMIT 1',
+                (project_id,),
+            ).fetchone()
+            if not owner:
+                return False
+            if owner['created_by'] == user_id:
+                return False
+
+            conn.execute(
+                '''
+                INSERT INTO project_members (project_id, user_id, role)
+                VALUES (?, ?, ?)
+                ON CONFLICT(project_id, user_id) DO UPDATE SET role = excluded.role
+                ''',
+                (project_id, user_id, role),
+            )
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def remove_project_member(project_id: int, user_id: int) -> bool:
+    with get_connection() as conn:
+        owner = conn.execute(
+            'SELECT created_by FROM projects WHERE id = ? LIMIT 1',
+            (project_id,),
+        ).fetchone()
+        if not owner or owner['created_by'] == user_id:
+            return False
+
+        conn.execute(
+            'DELETE FROM project_members WHERE project_id = ? AND user_id = ?',
+            (project_id, user_id),
+        )
+    return True
 
 
 def stats() -> dict[str, Any]:
     with get_connection() as conn:
-        users_total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        projects_total = conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
-        tasks_total = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        users_total = conn.execute('SELECT COUNT(*) FROM users').fetchone()[0]
+        projects_total = conn.execute('SELECT COUNT(*) FROM projects').fetchone()[0]
+        tasks_total = conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0]
         open_tasks = conn.execute(
             "SELECT COUNT(*) FROM tasks WHERE status IN ('open', 'in_progress')"
         ).fetchone()[0]
     return {
-        "users_total": users_total,
-        "projects_total": projects_total,
-        "tasks_total": tasks_total,
-        "open_tasks": open_tasks,
+        'users_total': users_total,
+        'projects_total': projects_total,
+        'tasks_total': tasks_total,
+        'open_tasks': open_tasks,
     }

@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}Projekte App | Household Tool{% endblock %}
+{% block content %}
+<div class="project-app">
+  <aside class="project-sidebar card">
+    <div class="project-sidebar-head">
+      <h1>Projekte</h1>
+      <p>Eigene und geteilte Projekte</p>
+    </div>
+
+    <nav class="project-nav">
+      {% if projects %}
+        {% for p in projects %}
+          <a
+            class="project-item {% if active_project and p.id == active_project.id %}is-active{% endif %}"
+            href="/projects?project_id={{ p.id }}{% if project_view != 'all' %}&view={{ project_view }}{% endif %}"
+          >
+            <span class="project-item-name">{{ p.name }}</span>
+            <span class="project-item-meta">
+              <span class="chip {% if p.access_type == 'own' %}chip-own{% else %}chip-shared{% endif %}">
+                {% if p.access_type == 'own' %}eigen{% else %}geteilt{% endif %}
+              </span>
+              <span class="muted">{{ p.open_task_count }}/{{ p.task_count }}</span>
+            </span>
+          </a>
+        {% endfor %}
+      {% else %}
+        <p class="muted">Noch keine Projekte verfügbar.</p>
+      {% endif %}
+    </nav>
+
+    <section class="project-create">
+      <h2>Neues Projekt</h2>
+      <form method="post" action="/projects" class="form-grid compact-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label for="name">Name</label>
+        <input id="name" name="name" required>
+
+        <label for="description">Beschreibung</label>
+        <textarea id="description" name="description" rows="2"></textarea>
+
+        <button type="submit">Anlegen</button>
+      </form>
+    </section>
+  </aside>
+
+  <section class="project-main">
+    {% if active_project %}
+      <header class="card project-header">
+        <div>
+          <h2>{{ active_project.name }}</h2>
+          <p>{{ active_project.description or 'Keine Beschreibung.' }}</p>
+        </div>
+        <div class="project-header-meta">
+          <span>Owner: {{ active_project.owner_name or '-' }}</span>
+          {% if active_project.membership_role == 'manager' and active_project.access_type == 'shared' %}
+            <span class="chip chip-manager">manager</span>
+          {% endif %}
+        </div>
+      </header>
+
+      <section class="card">
+        <div class="filters">
+          <a class="filter-chip {% if project_view == 'all' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}">Alle</a>
+          <a class="filter-chip {% if project_view == 'open' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=open">Offen</a>
+          <a class="filter-chip {% if project_view == 'done' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=done">Erledigt</a>
+        </div>
+
+        <h3>Neue Aufgabe</h3>
+        <form method="post" action="/projects/{{ active_project.id }}/tasks" class="task-create-grid">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="view" value="{{ project_view }}">
+
+          <label for="title">Titel</label>
+          <input id="title" name="title" required>
+
+          <label for="description">Beschreibung</label>
+          <textarea id="description" name="description" rows="2"></textarea>
+
+          <label for="status">Startstatus</label>
+          <select id="status" name="status">
+            <option value="open">offen</option>
+            <option value="in_progress">in Arbeit</option>
+            <option value="done">erledigt</option>
+          </select>
+
+          <label for="assignee_id">Zuständig</label>
+          <select id="assignee_id" name="assignee_id">
+            <option value="">-</option>
+            {% for account in task_assignees %}
+              <option value="{{ account.id }}">{{ account.username }}</option>
+            {% endfor %}
+          </select>
+
+          <button type="submit">Aufgabe hinzufügen</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h3>Aufgaben</h3>
+        {% if tasks %}
+          <table>
+            <thead>
+              <tr>
+                <th>Titel</th>
+                <th>Status</th>
+                <th>Zuständig</th>
+                <th>Aktion</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for task in tasks %}
+                <tr>
+                  <td>
+                    <div class="task-title">{{ task.title }}</div>
+                    {% if task.description %}<div class="task-sub">{{ task.description }}</div>{% endif %}
+                  </td>
+                  <td>
+                    {% if task.status == 'open' %}<span class="chip chip-open">offen</span>{% endif %}
+                    {% if task.status == 'in_progress' %}<span class="chip chip-progress">in Arbeit</span>{% endif %}
+                    {% if task.status == 'done' %}<span class="chip chip-done">erledigt</span>{% endif %}
+                  </td>
+                  <td>{{ task.assignee_name or '-' }}</td>
+                  <td>
+                    <div class="task-actions">
+                      {% if task.status != 'open' %}
+                        <form method="post" action="/tasks/{{ task.id }}/status">
+                          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                          <input type="hidden" name="project_id" value="{{ active_project.id }}">
+                          <input type="hidden" name="view" value="{{ project_view }}">
+                          <input type="hidden" name="status" value="open">
+                          <button type="submit" class="button-small">Offen</button>
+                        </form>
+                      {% endif %}
+
+                      {% if task.status != 'in_progress' %}
+                        <form method="post" action="/tasks/{{ task.id }}/status">
+                          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                          <input type="hidden" name="project_id" value="{{ active_project.id }}">
+                          <input type="hidden" name="view" value="{{ project_view }}">
+                          <input type="hidden" name="status" value="in_progress">
+                          <button type="submit" class="button-small secondary">In Arbeit</button>
+                        </form>
+                      {% endif %}
+
+                      {% if task.status != 'done' %}
+                        <form method="post" action="/tasks/{{ task.id }}/status">
+                          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                          <input type="hidden" name="project_id" value="{{ active_project.id }}">
+                          <input type="hidden" name="view" value="{{ project_view }}">
+                          <input type="hidden" name="status" value="done">
+                          <button type="submit" class="button-small done">Erledigt</button>
+                        </form>
+                      {% endif %}
+                    </div>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="muted">Keine Aufgaben für diesen Filter vorhanden.</p>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <h3>Projektmitglieder</h3>
+
+        {% if can_manage and shareable_users %}
+          <form method="post" action="/projects/{{ active_project.id }}/share" class="share-grid">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <input type="hidden" name="view" value="{{ project_view }}">
+
+            <label for="target_user_id">Benutzer hinzufügen</label>
+            <select id="target_user_id" name="target_user_id" required>
+              {% for account in shareable_users %}
+                <option value="{{ account.id }}">{{ account.username }}</option>
+              {% endfor %}
+            </select>
+
+            <label for="member_role">Rolle im Projekt</label>
+            <select id="member_role" name="member_role">
+              <option value="member">member</option>
+              <option value="manager">manager</option>
+            </select>
+
+            <button type="submit">Teilen</button>
+          </form>
+        {% endif %}
+
+        <table>
+          <thead>
+            <tr>
+              <th>Benutzer</th>
+              <th>Systemrolle</th>
+              <th>Projektrolle</th>
+              <th>Aktion</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for m in members %}
+              <tr>
+                <td>{{ m.username }}</td>
+                <td>{{ m.account_role }}</td>
+                <td>
+                  {% if m.project_role == 'owner' %}<span class="chip chip-owner">owner</span>{% endif %}
+                  {% if m.project_role == 'manager' %}<span class="chip chip-manager">manager</span>{% endif %}
+                  {% if m.project_role == 'member' %}<span class="chip">member</span>{% endif %}
+                </td>
+                <td>
+                  {% if can_manage and m.project_role != 'owner' %}
+                    <form method="post" action="/projects/{{ active_project.id }}/share/{{ m.id }}/remove">
+                      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                      <input type="hidden" name="view" value="{{ project_view }}">
+                      <button type="submit" class="button-small danger">Entfernen</button>
+                    </form>
+                  {% else %}
+                    -
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    {% else %}
+      <section class="card">
+        <h2>Keine Projekte vorhanden</h2>
+        <p>Lege links ein Projekt an, um mit der Projekte-App zu starten.</p>
+      </section>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}
