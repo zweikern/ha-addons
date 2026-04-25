@@ -18,6 +18,7 @@ from db import (
     create_task,
     create_user,
     ensure_admin_account,
+    ensure_admin_credentials,
     get_project,
     get_user_by_id,
     get_user_by_username,
@@ -104,17 +105,23 @@ def ensure_initial_admin() -> None:
     admin_username = str(options.get("admin_username") or "admin").strip() or "admin"
     admin_password = str(options.get("admin_password") or "").strip()
 
-    generated_pw = False
-    if not admin_password:
-        admin_password = secrets.token_urlsafe(12)
-        generated_pw = True
+    if admin_password:
+        created, updated = ensure_admin_credentials(
+            admin_username,
+            hash_password(admin_password),
+        )
+        if created:
+            print(f"[info] Configured admin account created: {admin_username}")
+        elif updated:
+            print(f"[info] Configured admin credentials updated: {admin_username}")
+        return
 
+    admin_password = secrets.token_urlsafe(12)
     created = ensure_admin_account(admin_username, hash_password(admin_password))
     if created:
         print(f"[info] Initial admin account created: {admin_username}")
-        if generated_pw:
-            print("[warning] No admin_password configured in add-on options.")
-            print(f"[warning] Temporary admin password: {admin_password}")
+        print("[warning] No admin_password configured in add-on options.")
+        print(f"[warning] Temporary admin password: {admin_password}")
 
 
 secret_key = get_or_create_secret_key()

@@ -106,6 +106,25 @@ def ensure_admin_account(username: str, password_hash: str) -> bool:
     return True
 
 
+def ensure_admin_credentials(username: str, password_hash: str) -> tuple[bool, bool]:
+    with get_connection() as conn:
+        existing = conn.execute(
+            "SELECT id FROM users WHERE username = ?", (username,)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE users SET password_hash = ?, role = 'admin' WHERE id = ?",
+                (password_hash, existing["id"]),
+            )
+            return False, True
+
+        conn.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')",
+            (username, password_hash),
+        )
+    return True, False
+
+
 def create_project(name: str, description: str, created_by: int | None) -> int:
     with get_connection() as conn:
         cur = conn.execute(
