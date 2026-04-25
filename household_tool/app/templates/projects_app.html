@@ -14,6 +14,7 @@
           <a
             class="project-item {% if active_project and p.id == active_project.id %}is-active{% endif %}"
             href="/projects?project_id={{ p.id }}{% if project_view != 'all' %}&view={{ project_view }}{% endif %}"
+            style="padding-left: calc(0.65rem + {{ p.depth }} * 0.7rem);"
           >
             <span class="project-item-name">{{ p.name }}</span>
             <span class="project-item-meta">
@@ -33,11 +34,20 @@
       <h2>Neues Projekt</h2>
       <form method="post" action="/projects" class="form-grid compact-form">
         <input type="hidden" name="csrf" value="{{ csrf_token }}">
-        <label for="name">Name</label>
-        <input id="name" name="name" required>
 
-        <label for="description">Beschreibung</label>
-        <textarea id="description" name="description" rows="2"></textarea>
+        <label for="create_name">Name</label>
+        <input id="create_name" name="name" required>
+
+        <label for="create_description">Beschreibung</label>
+        <textarea id="create_description" name="description" rows="2"></textarea>
+
+        <label for="create_parent">Parent (optional)</label>
+        <select id="create_parent" name="parent_id">
+          <option value="">- kein Parent -</option>
+          {% for p in parent_options_new %}
+            <option value="{{ p.id }}">{{ '— ' * p.depth }}{{ p.name }}</option>
+          {% endfor %}
+        </select>
 
         <button type="submit">Anlegen</button>
       </form>
@@ -56,13 +66,41 @@
           {% if active_project.membership_role == 'manager' and active_project.access_type == 'shared' %}
             <span class="chip chip-manager">manager</span>
           {% endif %}
+          <span class="chip">Fokus offen: {{ active_project.focus_count }}</span>
         </div>
       </header>
+
+      {% if can_manage %}
+        <section class="card">
+          <h3>Projekt bearbeiten</h3>
+          <form method="post" action="/projects/{{ active_project.id }}/edit" class="form-grid compact-form">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <input type="hidden" name="view" value="{{ project_view }}">
+
+            <label for="edit_project_name">Name</label>
+            <input id="edit_project_name" name="name" value="{{ active_project.name }}" required>
+
+            <label for="edit_project_description">Beschreibung</label>
+            <textarea id="edit_project_description" name="description" rows="2">{{ active_project.description }}</textarea>
+
+            <label for="edit_project_parent">Parent</label>
+            <select id="edit_project_parent" name="parent_id">
+              <option value="">- kein Parent -</option>
+              {% for p in parent_options_edit %}
+                <option value="{{ p.id }}" {% if active_project.parent_id == p.id %}selected{% endif %}>{{ '— ' * p.depth }}{{ p.name }}</option>
+              {% endfor %}
+            </select>
+
+            <button type="submit">Projekt speichern</button>
+          </form>
+        </section>
+      {% endif %}
 
       <section class="card">
         <div class="filters">
           <a class="filter-chip {% if project_view == 'all' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}">Alle</a>
           <a class="filter-chip {% if project_view == 'open' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=open">Offen</a>
+          <a class="filter-chip {% if project_view == 'focus' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=focus">Fokus</a>
           <a class="filter-chip {% if project_view == 'done' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=done">Erledigt</a>
         </div>
 
@@ -92,6 +130,7 @@
             {% endfor %}
           </select>
 
+          <label class="inline-check"><input type="checkbox" name="focus" value="1"> Fokus</label>
           <button type="submit">Aufgabe hinzufügen</button>
         </form>
       </section>
@@ -102,18 +141,24 @@
           <table>
             <thead>
               <tr>
-                <th>Titel</th>
+                <th>Aufgabe</th>
                 <th>Status</th>
                 <th>Zuständig</th>
+                <th>Anhänge</th>
                 <th>Aktion</th>
               </tr>
             </thead>
             <tbody>
               {% for task in tasks %}
+                {% set task_attachments = attachments_by_task.get(task.id, []) %}
                 <tr>
                   <td>
-                    <div class="task-title">{{ task.title }}</div>
+                    <div class="task-title">
+                      {% if task.focus %}<span class="focus-dot" title="Fokus">★</span>{% endif %}
+                      {{ task.title }}
+                    </div>
                     {% if task.description %}<div class="task-sub">{{ task.description }}</div>{% endif %}
+                    {% if task.completed_at %}<div class="task-sub">Abgeschlossen: {{ task.completed_at }}</div>{% endif %}
                   </td>
                   <td>
                     {% if task.status == 'open' %}<span class="chip chip-open">offen</span>{% endif %}
@@ -121,6 +166,29 @@
                     {% if task.status == 'done' %}<span class="chip chip-done">erledigt</span>{% endif %}
                   </td>
                   <td>{{ task.assignee_name or '-' }}</td>
+                  <td>
+                    {% if task_attachments %}
+                      <ul class="attachment-list">
+                        {% for a in task_attachments %}
+                          <li>
+                            <a href="/attachments/{{ a.id }}/download">{{ a.filename }}</a>
+                            <span class="muted">({{ a.size }} B)</span>
+                          </li>
+                        {% endfor %}
+                      </ul>
+                    {% else %}
+                      <span class="muted">-</span>
+                    {% endif %}
+
+                    <form method="post" action="/tasks/{{ task.id }}/attachments" enctype="multipart/form-data" class="attachment-upload">
+                      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                      <input type="hidden" name="project_id" value="{{ active_project.id }}">
+                      <input type="hidden" name="view" value="{{ project_view }}">
+                      <input type="file" name="file" required>
+                      <button type="submit" class="button-small secondary">Upload</button>
+                    </form>
+                    <div class="muted">Max {{ max_attachment_mb }} MB</div>
+                  </td>
                   <td>
                     <div class="task-actions">
                       {% if task.status != 'open' %}
@@ -153,6 +221,39 @@
                         </form>
                       {% endif %}
                     </div>
+
+                    <details class="edit-task">
+                      <summary>Bearbeiten</summary>
+                      <form method="post" action="/tasks/{{ task.id }}/edit" class="form-grid compact-form">
+                        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                        <input type="hidden" name="project_id" value="{{ active_project.id }}">
+                        <input type="hidden" name="view" value="{{ project_view }}">
+
+                        <label>Titel</label>
+                        <input name="title" value="{{ task.title }}" required>
+
+                        <label>Beschreibung</label>
+                        <textarea name="description" rows="2">{{ task.description }}</textarea>
+
+                        <label>Status</label>
+                        <select name="status">
+                          <option value="open" {% if task.status == 'open' %}selected{% endif %}>offen</option>
+                          <option value="in_progress" {% if task.status == 'in_progress' %}selected{% endif %}>in Arbeit</option>
+                          <option value="done" {% if task.status == 'done' %}selected{% endif %}>erledigt</option>
+                        </select>
+
+                        <label>Zuständig</label>
+                        <select name="assignee_id">
+                          <option value="">-</option>
+                          {% for account in task_assignees %}
+                            <option value="{{ account.id }}" {% if task.assignee_id == account.id %}selected{% endif %}>{{ account.username }}</option>
+                          {% endfor %}
+                        </select>
+
+                        <label class="inline-check"><input type="checkbox" name="focus" value="1" {% if task.focus %}checked{% endif %}> Fokus</label>
+                        <button type="submit" class="button-small">Speichern</button>
+                      </form>
+                    </details>
                   </td>
                 </tr>
               {% endfor %}
@@ -160,6 +261,24 @@
           </table>
         {% else %}
           <p class="muted">Keine Aufgaben für diesen Filter vorhanden.</p>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <h3>Historie (abgeschlossene Aufgaben)</h3>
+        {% if history %}
+          <ul class="history-list">
+            {% for item in history %}
+              <li>
+                <strong>{{ item.title }}</strong>
+                {% if item.assignee_name %}<span class="muted"> · {{ item.assignee_name }}</span>{% endif %}
+                {% if item.focus %}<span class="chip chip-manager">Fokus</span>{% endif %}
+                <div class="muted">{{ item.completed_at }}</div>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="muted">Noch keine abgeschlossenen Aufgaben.</p>
         {% endif %}
       </section>
 

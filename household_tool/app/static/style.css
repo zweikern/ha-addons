@@ -350,6 +350,60 @@ button:hover {
   margin-top: 0.2rem;
 }
 
+.focus-dot {
+  color: #f59e0b;
+  margin-right: 0.2rem;
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.inline-check input[type='checkbox'] {
+  width: auto;
+}
+
+.attachment-list {
+  margin: 0;
+  padding-left: 1rem;
+  font-size: 0.86rem;
+}
+
+.attachment-upload {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.attachment-upload input[type='file'] {
+  max-width: 220px;
+  padding: 0.3rem;
+}
+
+.edit-task {
+  margin-top: 0.5rem;
+}
+
+.edit-task summary {
+  cursor: pointer;
+  color: var(--primary);
+  font-weight: 700;
+  margin-bottom: 0.4rem;
+}
+
+.history-list {
+  margin: 0;
+  padding-left: 1rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
