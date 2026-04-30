@@ -11,10 +11,10 @@
     <a class="app-link" href="/projects">App öffnen</a>
   </article>
 
-  <article class="card app-card">
-    <h2>Einkauf</h2>
-    <p>Geplant. Platzhalter für zukünftige Haushalts-App.</p>
-    <span class="chip">Bald verfügbar</span>
+  <article class="card app-card app-card--active">
+    <h2>File Sharing</h2>
+    <p>Gemeinsame Dateiablage mit Ordnern, Vorschau, Drag &amp; Drop und 2-GB-Kontingent pro Nutzer.</p>
+    <a class="app-link" href="/files">App öffnen</a>
   </article>
 
   <article class="card app-card">
@@ -31,6 +31,7 @@
     <article class="stat"><h3>Projekte</h3><p>{{ stats.projects_total }}</p></article>
     <article class="stat"><h3>Aufgaben</h3><p>{{ stats.tasks_total }}</p></article>
     <article class="stat"><h3>Offen</h3><p>{{ stats.open_tasks }}</p></article>
+    <article class="stat"><h3>Dateien</h3><p>{{ stats.files_total }}</p></article>
   </div>
 </section>
 {% endblock %}

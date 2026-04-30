@@ -78,6 +78,38 @@ def init_db() -> None:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS fs_folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_id INTEGER,
+                name TEXT NOT NULL,
+                created_by INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(parent_id) REFERENCES fs_folders(id) ON DELETE CASCADE,
+                FOREIGN KEY(created_by) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS fs_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder_id INTEGER,
+                stored_name TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                mime TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                uploaded_by INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(folder_id) REFERENCES fs_folders(id) ON DELETE SET NULL,
+                FOREIGN KEY(uploaded_by) REFERENCES users(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_fs_folders_parent_name
+                ON fs_folders(parent_id, name);
+
+            CREATE INDEX IF NOT EXISTS idx_fs_files_folder_id
+                ON fs_files(folder_id);
+
+            CREATE INDEX IF NOT EXISTS idx_fs_files_uploaded_by
+                ON fs_files(uploaded_by);
             '''
         )
 
@@ -553,6 +585,285 @@ def get_attachment_if_accessible(attachment_id: int, user_id: int) -> sqlite3.Ro
         ).fetchone()
 
 
+
+def get_fs_folder(folder_id: int) -> sqlite3.Row | None:
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT
+                f.id,
+                f.parent_id,
+                f.name,
+                f.created_by,
+                f.created_at,
+                u.username AS created_by_name
+            FROM fs_folders f
+            JOIN users u ON u.id = f.created_by
+            WHERE f.id = ?
+            LIMIT 1
+            ''',
+            (folder_id,),
+        ).fetchone()
+
+
+def list_fs_folders(parent_id: int | None) -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        if parent_id is None:
+            return conn.execute(
+                '''
+                SELECT
+                    f.id,
+                    f.parent_id,
+                    f.name,
+                    f.created_by,
+                    f.created_at,
+                    u.username AS created_by_name,
+                    (SELECT COUNT(*) FROM fs_files ff WHERE ff.folder_id = f.id) AS file_count,
+                    (SELECT COUNT(*) FROM fs_folders cf WHERE cf.parent_id = f.id) AS folder_count
+                FROM fs_folders f
+                JOIN users u ON u.id = f.created_by
+                WHERE f.parent_id IS NULL
+                ORDER BY LOWER(f.name) ASC, f.id ASC
+                '''
+            ).fetchall()
+
+        return conn.execute(
+            '''
+            SELECT
+                f.id,
+                f.parent_id,
+                f.name,
+                f.created_by,
+                f.created_at,
+                u.username AS created_by_name,
+                (SELECT COUNT(*) FROM fs_files ff WHERE ff.folder_id = f.id) AS file_count,
+                (SELECT COUNT(*) FROM fs_folders cf WHERE cf.parent_id = f.id) AS folder_count
+            FROM fs_folders f
+            JOIN users u ON u.id = f.created_by
+            WHERE f.parent_id = ?
+            ORDER BY LOWER(f.name) ASC, f.id ASC
+            ''',
+            (parent_id,),
+        ).fetchall()
+
+
+def list_fs_files(parent_id: int | None) -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        if parent_id is None:
+            return conn.execute(
+                '''
+                SELECT
+                    ff.id,
+                    ff.folder_id,
+                    ff.stored_name,
+                    ff.original_name,
+                    ff.mime,
+                    ff.size,
+                    ff.uploaded_by,
+                    ff.created_at,
+                    u.username AS uploaded_by_name
+                FROM fs_files ff
+                JOIN users u ON u.id = ff.uploaded_by
+                WHERE ff.folder_id IS NULL
+                ORDER BY ff.created_at DESC, ff.id DESC
+                '''
+            ).fetchall()
+
+        return conn.execute(
+            '''
+            SELECT
+                ff.id,
+                ff.folder_id,
+                ff.stored_name,
+                ff.original_name,
+                ff.mime,
+                ff.size,
+                ff.uploaded_by,
+                ff.created_at,
+                u.username AS uploaded_by_name
+            FROM fs_files ff
+            JOIN users u ON u.id = ff.uploaded_by
+            WHERE ff.folder_id = ?
+            ORDER BY ff.created_at DESC, ff.id DESC
+            ''',
+            (parent_id,),
+        ).fetchall()
+
+
+def list_fs_breadcrumbs(folder_id: int | None) -> list[sqlite3.Row]:
+    if folder_id is None:
+        return []
+
+    with get_connection() as conn:
+        crumbs: list[sqlite3.Row] = []
+        current = folder_id
+        while True:
+            row = conn.execute(
+                'SELECT id, parent_id, name FROM fs_folders WHERE id = ? LIMIT 1',
+                (current,),
+            ).fetchone()
+            if not row:
+                break
+            crumbs.append(row)
+            if row['parent_id'] is None:
+                break
+            current = int(row['parent_id'])
+
+    crumbs.reverse()
+    return crumbs
+
+
+def _find_folder_child(conn: sqlite3.Connection, parent_id: int | None, name: str) -> sqlite3.Row | None:
+    clean_name = name.strip()
+    if not clean_name:
+        return None
+
+    if parent_id is None:
+        return conn.execute(
+            '''
+            SELECT id, parent_id, name
+            FROM fs_folders
+            WHERE parent_id IS NULL AND LOWER(name) = LOWER(?)
+            LIMIT 1
+            ''',
+            (clean_name,),
+        ).fetchone()
+
+    return conn.execute(
+        '''
+        SELECT id, parent_id, name
+        FROM fs_folders
+        WHERE parent_id = ? AND LOWER(name) = LOWER(?)
+        LIMIT 1
+        ''',
+        (parent_id, clean_name),
+    ).fetchone()
+
+
+def get_or_create_fs_folder(parent_id: int | None, name: str, created_by: int) -> int:
+    clean_name = name.strip()
+    if not clean_name:
+        raise ValueError('folder name required')
+
+    with get_connection() as conn:
+        existing = _find_folder_child(conn, parent_id, clean_name)
+        if existing:
+            return int(existing['id'])
+
+        cur = conn.execute(
+            'INSERT INTO fs_folders (parent_id, name, created_by) VALUES (?, ?, ?)',
+            (parent_id, clean_name, created_by),
+        )
+        return int(cur.lastrowid)
+
+
+def ensure_fs_folder_path(base_parent_id: int | None, relative_parts: list[str], created_by: int) -> int | None:
+    parent_id = base_parent_id
+    if not relative_parts:
+        return parent_id
+
+    with get_connection() as conn:
+        for raw_part in relative_parts:
+            part = raw_part.strip()
+            if not part:
+                continue
+
+            existing = _find_folder_child(conn, parent_id, part)
+            if existing:
+                parent_id = int(existing['id'])
+                continue
+
+            cur = conn.execute(
+                'INSERT INTO fs_folders (parent_id, name, created_by) VALUES (?, ?, ?)',
+                (parent_id, part, created_by),
+            )
+            parent_id = int(cur.lastrowid)
+
+    return parent_id
+
+
+def create_fs_file(
+    folder_id: int | None,
+    stored_name: str,
+    original_name: str,
+    mime: str,
+    size: int,
+    uploaded_by: int,
+) -> int:
+    with get_connection() as conn:
+        cur = conn.execute(
+            '''
+            INSERT INTO fs_files (folder_id, stored_name, original_name, mime, size, uploaded_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''',
+            (folder_id, stored_name, original_name, mime, size, uploaded_by),
+        )
+        return int(cur.lastrowid)
+
+
+def get_fs_file(file_id: int) -> sqlite3.Row | None:
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT
+                ff.id,
+                ff.folder_id,
+                ff.stored_name,
+                ff.original_name,
+                ff.mime,
+                ff.size,
+                ff.uploaded_by,
+                ff.created_at,
+                u.username AS uploaded_by_name
+            FROM fs_files ff
+            JOIN users u ON u.id = ff.uploaded_by
+            WHERE ff.id = ?
+            LIMIT 1
+            ''',
+            (file_id,),
+        ).fetchone()
+
+
+def delete_fs_file_if_owner(file_id: int, user_id: int) -> sqlite3.Row | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            '''
+            SELECT id, folder_id, stored_name, original_name, uploaded_by
+            FROM fs_files
+            WHERE id = ?
+            LIMIT 1
+            ''',
+            (file_id,),
+        ).fetchone()
+        if not row:
+            return None
+        if int(row['uploaded_by']) != user_id:
+            return None
+
+        conn.execute('DELETE FROM fs_files WHERE id = ?', (file_id,))
+        return row
+
+
+def fs_usage_for_user(user_id: int) -> int:
+    with get_connection() as conn:
+        value = conn.execute(
+            'SELECT COALESCE(SUM(size), 0) FROM fs_files WHERE uploaded_by = ?',
+            (user_id,),
+        ).fetchone()[0]
+        return int(value or 0)
+
+
+def fs_total_usage() -> int:
+    with get_connection() as conn:
+        value = conn.execute('SELECT COALESCE(SUM(size), 0) FROM fs_files').fetchone()[0]
+        return int(value or 0)
+
+
+def fs_files_count() -> int:
+    with get_connection() as conn:
+        value = conn.execute('SELECT COUNT(*) FROM fs_files').fetchone()[0]
+        return int(value or 0)
+
 def stats() -> dict[str, Any]:
     with get_connection() as conn:
         users_total = conn.execute('SELECT COUNT(*) FROM users').fetchone()[0]
@@ -561,9 +872,11 @@ def stats() -> dict[str, Any]:
         open_tasks = conn.execute(
             "SELECT COUNT(*) FROM tasks WHERE status IN ('open', 'in_progress')"
         ).fetchone()[0]
+        files_total = conn.execute('SELECT COUNT(*) FROM fs_files').fetchone()[0]
     return {
         'users_total': users_total,
         'projects_total': projects_total,
         'tasks_total': tasks_total,
         'open_tasks': open_tasks,
+        'files_total': files_total,
     }

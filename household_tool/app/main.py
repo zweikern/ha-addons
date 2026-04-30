@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import secrets
 from collections import defaultdict
 from pathlib import Path
@@ -9,7 +10,7 @@ from urllib.parse import urlencode
 
 import uvicorn
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -18,18 +19,28 @@ from auth import hash_password, verify_password
 from db import (
     add_project_member,
     create_attachment,
+    create_fs_file,
     create_project,
     create_task,
     create_user,
+    delete_fs_file_if_owner,
     ensure_admin_account,
     ensure_admin_credentials,
+    ensure_fs_folder_path,
+    fs_usage_for_user,
     get_accessible_project,
     get_attachment_if_accessible,
+    get_fs_file,
+    get_fs_folder,
     get_task_if_accessible,
     get_user_by_id,
     get_user_by_username,
+    get_or_create_fs_folder,
     init_db,
     list_accessible_projects,
+    list_fs_breadcrumbs,
+    list_fs_files,
+    list_fs_folders,
     list_project_attachments,
     list_project_history,
     list_project_members,
@@ -45,7 +56,10 @@ from db import (
 DATA_DIR = Path('/data')
 OPTIONS_PATH = DATA_DIR / 'options.json'
 SECRET_KEY_PATH = DATA_DIR / 'secret_key'
+FILESHARE_DIR = DATA_DIR / 'fileshare'
 MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024
+MAX_FILESHARE_BYTES = 300 * 1024 * 1024
+USER_FILESHARE_QUOTA_BYTES = 2 * 1024 * 1024 * 1024
 VALID_ROLES = {'admin', 'user'}
 VALID_MEMBER_ROLES = {'member', 'manager'}
 VALID_TASK_STATUS = {'open', 'in_progress', 'done'}
@@ -150,6 +164,64 @@ def parse_optional_int(raw: str | None) -> int | None:
     if not value:
         return None
     return int(value)
+
+
+
+def files_url(folder_id: int | None = None, error: str | None = None) -> str:
+    params: dict[str, str] = {}
+    if folder_id is not None:
+        params['folder_id'] = str(folder_id)
+    if error:
+        params['error'] = error
+    return '/files' + (f"?{urlencode(params)}" if params else '')
+
+
+def parse_optional_folder_id(raw: str | None) -> int | None:
+    value = (raw or '').strip()
+    if not value:
+        return None
+    return int(value)
+
+
+def normalize_name(raw: str, fallback: str) -> str:
+    name = Path(raw.strip()).name.strip()
+    if not name or name in {'.', '..'}:
+        return fallback
+    return name[:160]
+
+
+def split_relative_dir(relative_path: str) -> list[str]:
+    cleaned = relative_path.strip().replace('\\', '/').strip('/')
+    if not cleaned:
+        return []
+
+    parts = cleaned.split('/')
+    if parts:
+        parts = parts[:-1]
+
+    result: list[str] = []
+    for part in parts:
+        segment = part.strip()
+        if not segment or segment in {'.', '..'}:
+            continue
+        result.append(segment[:160])
+    return result
+
+
+def format_bytes(num: int) -> str:
+    value = float(max(num, 0))
+    units = ['B', 'KB', 'MB', 'GB', 'TB']
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == 'B':
+                return f'{int(value)} {unit}'
+            return f'{value:.1f} {unit}'
+        value /= 1024
+    return f'{num} B'
+
+
+def is_image_mime(mime: str) -> bool:
+    return mime.startswith('image/')
 
 
 def build_project_nav(projects: list[Any]) -> list[dict[str, Any]]:
@@ -258,6 +330,7 @@ app.add_middleware(
 def on_startup() -> None:
     init_db()
     ensure_initial_admin()
+    FILESHARE_DIR.mkdir(parents=True, exist_ok=True)
     print('[info] Database ready at /data/app.db')
 
 
@@ -770,6 +843,258 @@ def remove_project_member_submit(
         return redirect(projects_url(project_id, project_view, 'remove_failed'))
 
     return redirect(projects_url(project_id, project_view))
+
+
+
+@app.get('/files', response_class=HTMLResponse)
+def files_page(request: Request, folder_id: int | None = None):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    active_folder = None
+    if folder_id is not None:
+        active_folder = get_fs_folder(folder_id)
+        if not active_folder:
+            return redirect(files_url(error='folder_not_found'))
+
+    folders = list_fs_folders(folder_id)
+    files = [dict(item) for item in list_fs_files(folder_id)]
+    for item in files:
+        item['is_image'] = is_image_mime(str(item.get('mime') or ''))
+
+    breadcrumbs = list_fs_breadcrumbs(folder_id)
+    usage_bytes = fs_usage_for_user(int(user['id']))
+    quota_bytes = USER_FILESHARE_QUOTA_BYTES
+    free_bytes = max(0, quota_bytes - usage_bytes)
+    usage_percent = min(100, int((usage_bytes / quota_bytes) * 100)) if quota_bytes else 0
+
+    return templates.TemplateResponse(
+        request,
+        'files_app.html',
+        {
+            'user': user,
+            'active_folder': active_folder,
+            'folders': folders,
+            'files': files,
+            'breadcrumbs': breadcrumbs,
+            'usage_bytes': usage_bytes,
+            'usage_text': format_bytes(usage_bytes),
+            'quota_bytes': quota_bytes,
+            'quota_text': format_bytes(quota_bytes),
+            'free_bytes': free_bytes,
+            'free_text': format_bytes(free_bytes),
+            'usage_percent': usage_percent,
+            'max_file_mb': MAX_FILESHARE_BYTES // (1024 * 1024),
+            'csrf_token': csrf_token(request),
+            'files_error': request.query_params.get('error'),
+        },
+    )
+
+
+@app.post('/files/folders')
+def create_folder_submit(
+    request: Request,
+    name: str = Form(...),
+    parent_id: str = Form(default=''),
+    csrf: str = Form(...),
+):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    if not validate_csrf(request, csrf):
+        return redirect(files_url(error='csrf'))
+
+    try:
+        parent_folder_id = parse_optional_folder_id(parent_id)
+    except ValueError:
+        return redirect(files_url(error='invalid_parent'))
+
+    if parent_folder_id is not None and not get_fs_folder(parent_folder_id):
+        return redirect(files_url(error='invalid_parent'))
+
+    folder_name = name.strip()
+    if not folder_name:
+        return redirect(files_url(parent_folder_id, 'missing_name'))
+
+    created_id = get_or_create_fs_folder(parent_folder_id, folder_name, int(user['id']))
+    return redirect(files_url(created_id))
+
+
+@app.post('/files/upload')
+async def upload_files_submit(
+    request: Request,
+    parent_id: str = Form(default=''),
+    relative_path: list[str] = Form(default=[]),
+    csrf: str = Form(...),
+    files: list[UploadFile] = File(default=[]),
+):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    if not validate_csrf(request, csrf):
+        return redirect(files_url(error='csrf'))
+
+    try:
+        parent_folder_id = parse_optional_folder_id(parent_id)
+    except ValueError:
+        return redirect(files_url(error='invalid_parent'))
+
+    if parent_folder_id is not None and not get_fs_folder(parent_folder_id):
+        return redirect(files_url(error='invalid_parent'))
+
+    if not files:
+        return redirect(files_url(parent_folder_id, 'missing_file'))
+
+    uploaded = 0
+    usage_total = fs_usage_for_user(int(user['id']))
+    upload_error: str | None = None
+
+    for idx, upload in enumerate(files):
+        if not upload.filename:
+            await upload.close()
+            continue
+
+        original_name = normalize_name(upload.filename, f'upload-{idx + 1}.bin')
+        rel_path = relative_path[idx] if idx < len(relative_path) else ''
+        target_parts = split_relative_dir(rel_path)
+        target_folder_id = ensure_fs_folder_path(parent_folder_id, target_parts, int(user['id']))
+
+        guessed_mime = mimetypes.guess_type(original_name)[0]
+        mime = (upload.content_type or guessed_mime or 'application/octet-stream').strip()[:255]
+        stored_name = secrets.token_hex(24)
+        target_path = FILESHARE_DIR / stored_name
+
+        too_large = False
+        quota_exceeded = False
+        file_size = 0
+
+        with target_path.open('wb') as fh:
+            while True:
+                chunk = await upload.read(1024 * 1024)
+                if not chunk:
+                    break
+                file_size += len(chunk)
+
+                if file_size > MAX_FILESHARE_BYTES:
+                    too_large = True
+                    break
+
+                if usage_total + file_size > USER_FILESHARE_QUOTA_BYTES:
+                    quota_exceeded = True
+                    break
+
+                fh.write(chunk)
+
+        await upload.close()
+
+        if too_large or quota_exceeded:
+            if target_path.exists():
+                target_path.unlink()
+            upload_error = 'file_too_large' if too_large else 'quota_exceeded'
+            break
+
+        create_fs_file(
+            folder_id=target_folder_id,
+            stored_name=stored_name,
+            original_name=original_name,
+            mime=mime,
+            size=file_size,
+            uploaded_by=int(user['id']),
+        )
+        usage_total += file_size
+        uploaded += 1
+
+    if upload_error:
+        return redirect(files_url(parent_folder_id, upload_error))
+
+    if uploaded == 0:
+        return redirect(files_url(parent_folder_id, 'missing_file'))
+
+    return redirect(files_url(parent_folder_id))
+
+
+@app.get('/files/{file_id}/download')
+def files_download(request: Request, file_id: int):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    item = get_fs_file(file_id)
+    if not item:
+        return HTMLResponse('File not found', status_code=404)
+
+    file_path = FILESHARE_DIR / str(item['stored_name'])
+    if not file_path.exists() or not file_path.is_file():
+        return HTMLResponse('Stored file missing', status_code=404)
+
+    filename = str(item['original_name']).replace('\"', '').replace('\n', '')
+    headers = {'Content-Disposition': f'attachment; filename="{filename}"'}
+    return FileResponse(
+        path=file_path,
+        media_type=str(item['mime']) or 'application/octet-stream',
+        filename=filename,
+        headers=headers,
+    )
+
+
+@app.get('/files/{file_id}/view')
+def files_view(request: Request, file_id: int):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    item = get_fs_file(file_id)
+    if not item:
+        return HTMLResponse('File not found', status_code=404)
+
+    file_path = FILESHARE_DIR / str(item['stored_name'])
+    if not file_path.exists() or not file_path.is_file():
+        return HTMLResponse('Stored file missing', status_code=404)
+
+    filename = str(item['original_name']).replace('\"', '').replace('\n', '')
+    headers = {'Content-Disposition': f'inline; filename="{filename}"'}
+    return FileResponse(
+        path=file_path,
+        media_type=str(item['mime']) or 'application/octet-stream',
+        filename=filename,
+        headers=headers,
+    )
+
+
+@app.post('/files/{file_id}/delete')
+def delete_file_submit(
+    request: Request,
+    file_id: int,
+    folder_id: str = Form(default=''),
+    csrf: str = Form(...),
+):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    try:
+        redirect_folder_id = parse_optional_folder_id(folder_id)
+    except ValueError:
+        redirect_folder_id = None
+
+    if not validate_csrf(request, csrf):
+        return redirect(files_url(redirect_folder_id, 'csrf'))
+
+    row = delete_fs_file_if_owner(file_id, int(user['id']))
+    if not row:
+        existing = get_fs_file(file_id)
+        if existing:
+            return redirect(files_url(redirect_folder_id, 'forbidden_delete'))
+        return redirect(files_url(redirect_folder_id, 'file_not_found'))
+
+    file_path = FILESHARE_DIR / str(row['stored_name'])
+    if file_path.exists() and file_path.is_file():
+        file_path.unlink()
+
+    return redirect(files_url(redirect_folder_id))
 
 
 @app.get('/users', response_class=HTMLResponse)
