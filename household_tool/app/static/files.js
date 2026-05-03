@@ -216,11 +216,16 @@
   const previewCaption = document.getElementById('image-preview-caption');
   const previewClose = document.getElementById('image-preview-close');
 
+  if (previewModal) {
+    previewModal.hidden = true;
+  }
+
   function closePreview() {
     if (!previewModal) {
       return;
     }
     previewModal.hidden = true;
+    document.body.classList.remove('has-modal-open');
     previewImage.src = '';
     previewCaption.textContent = '';
   }
@@ -233,6 +238,7 @@
         previewImage.src = src;
         previewCaption.textContent = name;
         previewModal.hidden = false;
+        document.body.classList.add('has-modal-open');
       });
     });
 

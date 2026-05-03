@@ -1,152 +1,169 @@
 {% extends "base.html" %}
 {% block title %}File Sharing | Household Tool{% endblock %}
 {% block content %}
-<h1>File Sharing</h1>
-<p class="lede">Gemeinsamer Speicherbereich für den Haushalt. Alle können ansehen und herunterladen, löschen darf nur der Uploader.</p>
+<section class="files-page">
+  <header class="files-page-head card">
+    <div>
+      <p class="files-eyebrow">Household Platform</p>
+      <h1>Dateiablage</h1>
+      <p class="lede files-lede">Gemeinsamer Speicherbereich im Haushalt. Alle Nutzer koennen ansehen und herunterladen, loeschen darf nur der jeweilige Uploader.</p>
+    </div>
+    <div class="files-head-note">
+      <span class="chip">Max. {{ max_file_mb }} MB pro Datei</span>
+      <span class="chip chip-open">Kontingent: 2 GB pro Nutzer</span>
+    </div>
+  </header>
 
-{% if files_error == 'missing_name' %}
-  <div class="alert">Bitte einen Ordnernamen angeben.</div>
-{% elif files_error == 'invalid_parent' %}
-  <div class="alert">Ungültiger Zielordner.</div>
-{% elif files_error == 'missing_file' %}
-  <div class="alert">Bitte mindestens eine Datei auswählen.</div>
-{% elif files_error == 'file_too_large' %}
-  <div class="alert">Datei zu groß. Maximum {{ max_file_mb }} MB pro Datei.</div>
-{% elif files_error == 'quota_exceeded' %}
-  <div class="alert">Upload würde dein 2-GB-Limit überschreiten.</div>
-{% elif files_error == 'forbidden_delete' %}
-  <div class="alert">Löschen nur für den Benutzer möglich, der die Datei hochgeladen hat.</div>
-{% elif files_error == 'folder_not_found' %}
-  <div class="alert">Ordner wurde nicht gefunden.</div>
-{% elif files_error == 'file_not_found' %}
-  <div class="alert">Datei wurde nicht gefunden.</div>
-{% elif files_error == 'upload_failed' %}
-  <div class="alert">Upload fehlgeschlagen. Bitte erneut versuchen.</div>
-{% endif %}
+  {% if files_error == 'missing_name' %}
+    <div class="alert">Bitte einen Ordnernamen angeben.</div>
+  {% elif files_error == 'invalid_parent' %}
+    <div class="alert">Ungueltiger Zielordner.</div>
+  {% elif files_error == 'missing_file' %}
+    <div class="alert">Bitte mindestens eine Datei auswaehlen.</div>
+  {% elif files_error == 'file_too_large' %}
+    <div class="alert">Datei zu gross. Maximum {{ max_file_mb }} MB pro Datei.</div>
+  {% elif files_error == 'quota_exceeded' %}
+    <div class="alert">Upload wuerde dein 2-GB-Limit ueberschreiten.</div>
+  {% elif files_error == 'forbidden_delete' %}
+    <div class="alert">Loeschen ist nur fuer den Uploader erlaubt.</div>
+  {% elif files_error == 'folder_not_found' %}
+    <div class="alert">Ordner wurde nicht gefunden.</div>
+  {% elif files_error == 'file_not_found' %}
+    <div class="alert">Datei wurde nicht gefunden.</div>
+  {% elif files_error == 'upload_failed' %}
+    <div class="alert">Upload fehlgeschlagen. Bitte erneut versuchen.</div>
+  {% endif %}
 
-<section class="card files-usage-card">
-  <div class="files-usage-head">
-    <h2>Dein Speicherplatz</h2>
-    <p>{{ usage_text }} von {{ quota_text }} genutzt (frei: {{ free_text }})</p>
-  </div>
-  <div class="usage-bar" role="progressbar" aria-valuenow="{{ usage_percent }}" aria-valuemin="0" aria-valuemax="100">
-    <span style="width: {{ usage_percent }}%"></span>
-  </div>
-</section>
+  <section class="card files-usage-card">
+    <div class="files-usage-head">
+      <h2>Dein Speicherplatz</h2>
+      <p><strong>{{ usage_text }}</strong> von {{ quota_text }} genutzt, frei: {{ free_text }}</p>
+    </div>
+    <div class="usage-bar" role="progressbar" aria-valuenow="{{ usage_percent }}" aria-valuemin="0" aria-valuemax="100">
+      <span style="width: {{ usage_percent }}%"></span>
+    </div>
+  </section>
 
-<section class="card files-toolbar">
-  <div class="breadcrumbs">
-    <a href="/files">Dateien</a>
-    {% for crumb in breadcrumbs %}
-      <span>/</span>
-      <a href="/files?folder_id={{ crumb.id }}">{{ crumb.name }}</a>
-    {% endfor %}
-  </div>
+  <section class="card files-toolbar">
+    <div class="breadcrumbs" aria-label="Breadcrumb">
+      <a href="/files">Dateien</a>
+      {% for crumb in breadcrumbs %}
+        <span>/</span>
+        <a href="/files?folder_id={{ crumb.id }}">{{ crumb.name }}</a>
+      {% endfor %}
+    </div>
 
-  <div class="files-toolbar-grid">
-    <form method="post" action="/files/folders" class="compact-form">
-      <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <input type="hidden" name="parent_id" value="{{ active_folder.id if active_folder else '' }}">
-      <label>Neuer Ordner</label>
-      <div class="inline-form-row">
-        <input name="name" type="text" placeholder="Ordnername" required>
-        <button type="submit">Anlegen</button>
-      </div>
-    </form>
+    <div class="files-toolbar-grid">
+      <form method="post" action="/files/folders" class="compact-form files-panel">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="parent_id" value="{{ active_folder.id if active_folder else '' }}">
+        <label>Neuer Ordner</label>
+        <div class="inline-form-row">
+          <input name="name" type="text" placeholder="Ordnername" required>
+          <button type="submit">Anlegen</button>
+        </div>
+      </form>
 
-    <form method="post" action="/files/upload" enctype="multipart/form-data" class="compact-form" id="files-upload-form">
-      <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <input type="hidden" name="parent_id" value="{{ active_folder.id if active_folder else '' }}">
-      <label>Dateien oder Ordner hochladen (max. {{ max_file_mb }} MB je Datei)</label>
-      <div class="upload-dropzone" id="upload-dropzone" tabindex="0">
-        <p>Dateien oder Ordner hierher ziehen</p>
-        <small>oder unten auswählen</small>
-      </div>
-      <div class="upload-picker-row">
-        <input id="files-input" type="file" name="files" multiple>
-        <input id="folders-input" type="file" multiple webkitdirectory directory>
-        <button type="submit">Hochladen</button>
-      </div>
-      <div class="muted" id="upload-queue-info">Keine Auswahl</div>
-    </form>
-  </div>
-</section>
+      <form method="post" action="/files/upload" enctype="multipart/form-data" class="compact-form files-panel" id="files-upload-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="parent_id" value="{{ active_folder.id if active_folder else '' }}">
+        <label>Upload</label>
+        <div class="upload-dropzone" id="upload-dropzone" tabindex="0">
+          <p>Dateien oder Ordner hierher ziehen</p>
+          <small>oder unten ueber die Buttons auswaehlen</small>
+        </div>
+        <div class="upload-picker-row">
+          <label class="file-picker" for="files-input">
+            Dateien waehlen
+            <input id="files-input" type="file" name="files" multiple>
+          </label>
+          <label class="file-picker" for="folders-input">
+            Ordner waehlen
+            <input id="folders-input" type="file" multiple webkitdirectory directory>
+          </label>
+          <button type="submit">Hochladen</button>
+        </div>
+        <div class="muted" id="upload-queue-info">Keine Auswahl</div>
+      </form>
+    </div>
+  </section>
 
-<section class="files-layout">
-  <article class="card">
-    <h2>Ordner</h2>
-    {% if not folders %}
-      <p class="muted">Keine Unterordner vorhanden.</p>
-    {% else %}
-      <div class="folder-grid">
-        {% for folder in folders %}
-          <a class="folder-item" href="/files?folder_id={{ folder.id }}">
-            <span class="folder-icon">[DIR]</span>
-            <span class="folder-name">{{ folder.name }}</span>
-            <small>{{ folder.folder_count }} Ordner · {{ folder.file_count }} Dateien</small>
-          </a>
-        {% endfor %}
-      </div>
-    {% endif %}
-  </article>
-
-  <article class="card">
-    <h2>Dateien</h2>
-    {% if not files %}
-      <p class="muted">Keine Dateien in diesem Ordner.</p>
-    {% else %}
-      <table>
-        <thead>
-          <tr>
-            <th>Datei</th>
-            <th>Typ</th>
-            <th>Größe</th>
-            <th>Uploader</th>
-            <th>Aktionen</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for file in files %}
-            <tr>
-              <td>
-                <div class="file-name-wrap">
-                  {% if file.is_image %}
-                    <button type="button" class="image-thumb-button" data-preview-src="/files/{{ file.id }}/view" data-preview-name="{{ file.original_name }}">
-                      <img src="/files/{{ file.id }}/view" alt="{{ file.original_name }}" class="image-thumb" loading="lazy">
-                    </button>
-                  {% endif %}
-                  <div>
-                    <strong>{{ file.original_name }}</strong>
-                    <div class="task-sub">{{ file.created_at }}</div>
-                  </div>
-                </div>
-              </td>
-              <td>{{ file.mime }}</td>
-              <td>{{ (file.size / (1024 * 1024))|round(2) }} MB</td>
-              <td>{{ file.uploaded_by_name }}</td>
-              <td>
-                <div class="task-actions">
-                  <a class="app-link button-small secondary" href="/files/{{ file.id }}/view" target="_blank" rel="noopener">Ansehen</a>
-                  <a class="app-link button-small" href="/files/{{ file.id }}/download">Download</a>
-                  {% if file.uploaded_by == user.id %}
-                    <form method="post" action="/files/{{ file.id }}/delete">
-                      <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                      <input type="hidden" name="folder_id" value="{{ active_folder.id if active_folder else '' }}">
-                      <button type="submit" class="button-small danger">Löschen</button>
-                    </form>
-                  {% endif %}
-                </div>
-              </td>
-            </tr>
+  <section class="files-layout">
+    <article class="card">
+      <h2>Ordner</h2>
+      {% if not folders %}
+        <p class="muted">Keine Unterordner vorhanden.</p>
+      {% else %}
+        <div class="folder-grid">
+          {% for folder in folders %}
+            <a class="folder-item" href="/files?folder_id={{ folder.id }}">
+              <span class="folder-icon">DIR</span>
+              <span class="folder-name">{{ folder.name }}</span>
+              <small>{{ folder.folder_count }} Ordner · {{ folder.file_count }} Dateien</small>
+            </a>
           {% endfor %}
-        </tbody>
-      </table>
-    {% endif %}
-  </article>
+        </div>
+      {% endif %}
+    </article>
+
+    <article class="card">
+      <h2>Dateien</h2>
+      {% if not files %}
+        <p class="muted">Keine Dateien in diesem Ordner.</p>
+      {% else %}
+        <table>
+          <thead>
+            <tr>
+              <th>Datei</th>
+              <th>Typ</th>
+              <th>Größe</th>
+              <th>Uploader</th>
+              <th>Aktionen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for file in files %}
+              <tr>
+                <td>
+                  <div class="file-name-wrap">
+                    {% if file.is_image %}
+                      <button type="button" class="image-thumb-button" data-preview-src="/files/{{ file.id }}/view" data-preview-name="{{ file.original_name }}">
+                        <img src="/files/{{ file.id }}/view" alt="{{ file.original_name }}" class="image-thumb" loading="lazy">
+                      </button>
+                    {% endif %}
+                    <div>
+                      <strong>{{ file.original_name }}</strong>
+                      <div class="task-sub">{{ file.created_at }}</div>
+                    </div>
+                  </div>
+                </td>
+                <td>{{ file.mime }}</td>
+                <td>{{ (file.size / (1024 * 1024))|round(2) }} MB</td>
+                <td>{{ file.uploaded_by_name }}</td>
+                <td>
+                  <div class="task-actions">
+                    <a class="app-link button-small secondary" href="/files/{{ file.id }}/view" target="_blank" rel="noopener">Ansehen</a>
+                    <a class="app-link button-small" href="/files/{{ file.id }}/download">Download</a>
+                    {% if file.uploaded_by == user.id %}
+                      <form method="post" action="/files/{{ file.id }}/delete">
+                        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                        <input type="hidden" name="folder_id" value="{{ active_folder.id if active_folder else '' }}">
+                        <button type="submit" class="button-small danger">Loeschen</button>
+                      </form>
+                    {% endif %}
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </article>
+  </section>
 </section>
 
 <div class="image-preview-modal" id="image-preview-modal" hidden>
-  <button type="button" class="image-preview-close" id="image-preview-close" aria-label="Schließen">×</button>
+  <button type="button" class="image-preview-close" id="image-preview-close" aria-label="Schliessen">x</button>
   <figure>
     <img id="image-preview-content" src="" alt="Vorschau">
     <figcaption id="image-preview-caption"></figcaption>
