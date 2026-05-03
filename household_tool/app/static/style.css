@@ -606,6 +606,30 @@ th {
   gap: 0.8rem;
 }
 
+.files-share-card {
+  border-color: #c7dbea;
+  background: linear-gradient(140deg, #fbfefe 0%, #ffffff 58%, #f6fbff 100%);
+}
+
+.share-list-wrap {
+  margin-top: 0.7rem;
+}
+
+.share-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.share-list-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 0.45rem 0.55rem;
+  background: #fff;
+}
+
 .files-panel {
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -707,6 +731,7 @@ th {
   padding: 0.62rem 0.72rem;
   background: #f8fbff;
   transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+  flex-wrap: wrap;
 }
 
 .folder-item:hover {

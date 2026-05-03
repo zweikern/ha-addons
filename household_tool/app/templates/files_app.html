@@ -6,9 +6,10 @@
     <div>
       <p class="files-eyebrow">Household Platform</p>
       <h1>Dateiablage</h1>
-      <p class="lede files-lede">Gemeinsamer Speicherbereich im Haushalt. Alle Nutzer koennen ansehen und herunterladen, loeschen darf nur der jeweilige Uploader.</p>
+      <p class="lede files-lede">Gemeinsamer Speicherbereich im Haushalt. Zugriff auf eigene und freigegebene Ordner. Loeschen darf nur der jeweilige Uploader.</p>
     </div>
     <div class="files-head-note">
+      <a class="app-link button-small secondary" href="/files/download-all">Alle Ordner als ZIP</a>
       <span class="chip">Max. {{ max_file_mb }} MB pro Datei</span>
       <span class="chip chip-open">Kontingent: 2 GB pro Nutzer</span>
     </div>
@@ -27,11 +28,19 @@
   {% elif files_error == 'forbidden_delete' %}
     <div class="alert">Loeschen ist nur fuer den Uploader erlaubt.</div>
   {% elif files_error == 'folder_not_found' %}
-    <div class="alert">Ordner wurde nicht gefunden.</div>
+    <div class="alert">Ordner wurde nicht gefunden oder ist nicht freigegeben.</div>
   {% elif files_error == 'file_not_found' %}
-    <div class="alert">Datei wurde nicht gefunden.</div>
+    <div class="alert">Datei wurde nicht gefunden oder ist nicht freigegeben.</div>
   {% elif files_error == 'upload_failed' %}
     <div class="alert">Upload fehlgeschlagen. Bitte erneut versuchen.</div>
+  {% elif files_error == 'forbidden' %}
+    <div class="alert">Keine Berechtigung fuer diesen Ordner.</div>
+  {% elif files_error == 'share_failed' %}
+    <div class="alert">Ordner konnte nicht geteilt werden.</div>
+  {% elif files_error == 'remove_failed' %}
+    <div class="alert">Freigabe konnte nicht entfernt werden.</div>
+  {% elif files_error == 'no_folders' %}
+    <div class="alert">Keine erreichbaren Ordner fuer den ZIP-Download vorhanden.</div>
   {% endif %}
 
   <section class="card files-usage-card">
@@ -51,6 +60,9 @@
         <span>/</span>
         <a href="/files?folder_id={{ crumb.id }}">{{ crumb.name }}</a>
       {% endfor %}
+      {% if active_folder %}
+        <a class="app-link button-small" href="/files/folders/{{ active_folder.id }}/download">Diesen Ordner als ZIP</a>
+      {% endif %}
     </div>
 
     <div class="files-toolbar-grid">
@@ -88,6 +100,44 @@
     </div>
   </section>
 
+  {% if active_folder and can_manage_share %}
+    <section class="card files-share-card">
+      <h2>Ordner teilen</h2>
+      <form method="post" action="/files/{{ active_folder.id }}/share" class="share-grid">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label>Nutzer hinzufuegen</label>
+        <div class="inline-form-row">
+          <select name="target_user_id" required>
+            <option value="">Bitte waehlen</option>
+            {% for person in shareable_users %}
+              <option value="{{ person.id }}">{{ person.username }} ({{ person.role }})</option>
+            {% endfor %}
+          </select>
+          <button type="submit">Freigeben</button>
+        </div>
+      </form>
+
+      <div class="share-list-wrap">
+        <p class="muted">Mitglieder dieses Ordners:</p>
+        <div class="share-list">
+          {% for member in folder_members %}
+            <div class="share-list-item">
+              <span>{{ member.username }}</span>
+              {% if member.share_role == 'owner' %}
+                <span class="chip chip-owner">Owner</span>
+              {% else %}
+                <form method="post" action="/files/{{ active_folder.id }}/share/{{ member.id }}/remove">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <button type="submit" class="button-small danger">Entfernen</button>
+                </form>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    </section>
+  {% endif %}
+
   <section class="files-layout">
     <article class="card">
       <h2>Ordner</h2>
@@ -99,7 +149,12 @@
             <a class="folder-item" href="/files?folder_id={{ folder.id }}">
               <span class="folder-icon">DIR</span>
               <span class="folder-name">{{ folder.name }}</span>
-              <small>{{ folder.folder_count }} Ordner · {{ folder.file_count }} Dateien</small>
+              <small>
+                {{ folder.folder_count }} Ordner · {{ folder.file_count }} Dateien
+                {% if folder.access_type == 'shared' %}
+                  · shared
+                {% endif %}
+              </small>
             </a>
           {% endfor %}
         </div>
@@ -116,7 +171,7 @@
             <tr>
               <th>Datei</th>
               <th>Typ</th>
-              <th>Größe</th>
+              <th>Groesse</th>
               <th>Uploader</th>
               <th>Aktionen</th>
             </tr>

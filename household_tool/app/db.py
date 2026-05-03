@@ -102,6 +102,16 @@ def init_db() -> None:
                 FOREIGN KEY(uploaded_by) REFERENCES users(id)
             );
 
+            CREATE TABLE IF NOT EXISTS fs_folder_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(folder_id, user_id),
+                FOREIGN KEY(folder_id) REFERENCES fs_folders(id) ON DELETE CASCADE,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_fs_folders_parent_name
                 ON fs_folders(parent_id, name);
 
@@ -110,6 +120,9 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_fs_files_uploaded_by
                 ON fs_files(uploaded_by);
+
+            CREATE INDEX IF NOT EXISTS idx_fs_folder_members_folder
+                ON fs_folder_members(folder_id);
             '''
         )
 
@@ -586,9 +599,63 @@ def get_attachment_if_accessible(attachment_id: int, user_id: int) -> sqlite3.Ro
 
 
 
-def get_fs_folder(folder_id: int) -> sqlite3.Row | None:
+def _is_admin_user(conn: sqlite3.Connection, user_id: int) -> bool:
+    row = conn.execute('SELECT role FROM users WHERE id = ? LIMIT 1', (user_id,)).fetchone()
+    return bool(row and row['role'] == 'admin')
+
+
+def has_fs_folder_access(folder_id: int, user_id: int) -> bool:
     with get_connection() as conn:
-        return conn.execute(
+        if _is_admin_user(conn, user_id):
+            return True
+
+        current_id: int | None = folder_id
+        while current_id is not None:
+            row = conn.execute(
+                'SELECT id, parent_id, created_by FROM fs_folders WHERE id = ? LIMIT 1',
+                (current_id,),
+            ).fetchone()
+            if not row:
+                return False
+            if int(row['created_by']) == user_id:
+                return True
+
+            membership = conn.execute(
+                'SELECT 1 FROM fs_folder_members WHERE folder_id = ? AND user_id = ? LIMIT 1',
+                (current_id, user_id),
+            ).fetchone()
+            if membership:
+                return True
+
+            parent = row['parent_id']
+            current_id = int(parent) if parent is not None else None
+
+    return False
+
+
+def fs_folder_access_type(folder_id: int, user_id: int) -> str:
+    with get_connection() as conn:
+        if _is_admin_user(conn, user_id):
+            return 'own'
+
+        row = conn.execute(
+            'SELECT created_by FROM fs_folders WHERE id = ? LIMIT 1',
+            (folder_id,),
+        ).fetchone()
+        if not row:
+            return 'none'
+        if int(row['created_by']) == user_id:
+            return 'own'
+
+    return 'shared' if has_fs_folder_access(folder_id, user_id) else 'none'
+
+
+def get_fs_folder(folder_id: int, user_id: int) -> sqlite3.Row | None:
+    if not has_fs_folder_access(folder_id, user_id):
+        return None
+
+    with get_connection() as conn:
+        row = conn.execute(
             '''
             SELECT
                 f.id,
@@ -604,12 +671,21 @@ def get_fs_folder(folder_id: int) -> sqlite3.Row | None:
             ''',
             (folder_id,),
         ).fetchone()
+        if not row:
+            return None
+
+    as_dict = dict(row)
+    as_dict['access_type'] = fs_folder_access_type(folder_id, user_id)
+    return as_dict
 
 
-def list_fs_folders(parent_id: int | None) -> list[sqlite3.Row]:
+def list_fs_folders(parent_id: int | None, user_id: int) -> list[sqlite3.Row]:
     with get_connection() as conn:
+        if parent_id is not None and not has_fs_folder_access(parent_id, user_id):
+            return []
+
         if parent_id is None:
-            return conn.execute(
+            rows = conn.execute(
                 '''
                 SELECT
                     f.id,
@@ -626,31 +702,45 @@ def list_fs_folders(parent_id: int | None) -> list[sqlite3.Row]:
                 ORDER BY LOWER(f.name) ASC, f.id ASC
                 '''
             ).fetchall()
+        else:
+            rows = conn.execute(
+                '''
+                SELECT
+                    f.id,
+                    f.parent_id,
+                    f.name,
+                    f.created_by,
+                    f.created_at,
+                    u.username AS created_by_name,
+                    (SELECT COUNT(*) FROM fs_files ff WHERE ff.folder_id = f.id) AS file_count,
+                    (SELECT COUNT(*) FROM fs_folders cf WHERE cf.parent_id = f.id) AS folder_count
+                FROM fs_folders f
+                JOIN users u ON u.id = f.created_by
+                WHERE f.parent_id = ?
+                ORDER BY LOWER(f.name) ASC, f.id ASC
+                ''',
+                (parent_id,),
+            ).fetchall()
 
-        return conn.execute(
-            '''
-            SELECT
-                f.id,
-                f.parent_id,
-                f.name,
-                f.created_by,
-                f.created_at,
-                u.username AS created_by_name,
-                (SELECT COUNT(*) FROM fs_files ff WHERE ff.folder_id = f.id) AS file_count,
-                (SELECT COUNT(*) FROM fs_folders cf WHERE cf.parent_id = f.id) AS folder_count
-            FROM fs_folders f
-            JOIN users u ON u.id = f.created_by
-            WHERE f.parent_id = ?
-            ORDER BY LOWER(f.name) ASC, f.id ASC
-            ''',
-            (parent_id,),
-        ).fetchall()
+    result: list[sqlite3.Row] = []
+    for row in rows:
+        folder_id = int(row['id'])
+        access_type = fs_folder_access_type(folder_id, user_id)
+        if access_type == 'none':
+            continue
+        row_dict = dict(row)
+        row_dict['access_type'] = access_type
+        result.append(row_dict)
+    return result
 
 
-def list_fs_files(parent_id: int | None) -> list[sqlite3.Row]:
+def list_fs_files(parent_id: int | None, user_id: int) -> list[sqlite3.Row]:
     with get_connection() as conn:
+        if parent_id is not None and not has_fs_folder_access(parent_id, user_id):
+            return []
+
         if parent_id is None:
-            return conn.execute(
+            rows = conn.execute(
                 '''
                 SELECT
                     ff.id,
@@ -668,6 +758,12 @@ def list_fs_files(parent_id: int | None) -> list[sqlite3.Row]:
                 ORDER BY ff.created_at DESC, ff.id DESC
                 '''
             ).fetchall()
+
+            current = conn.execute('SELECT role FROM users WHERE id = ? LIMIT 1', (user_id,)).fetchone()
+            is_admin = bool(current and current['role'] == 'admin')
+            if is_admin:
+                return rows
+            return [row for row in rows if int(row['uploaded_by']) == user_id]
 
         return conn.execute(
             '''
@@ -690,8 +786,8 @@ def list_fs_files(parent_id: int | None) -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def list_fs_breadcrumbs(folder_id: int | None) -> list[sqlite3.Row]:
-    if folder_id is None:
+def list_fs_breadcrumbs(folder_id: int | None, user_id: int) -> list[sqlite3.Row]:
+    if folder_id is None or not has_fs_folder_access(folder_id, user_id):
         return []
 
     with get_connection() as conn:
@@ -745,6 +841,9 @@ def get_or_create_fs_folder(parent_id: int | None, name: str, created_by: int) -
     if not clean_name:
         raise ValueError('folder name required')
 
+    if parent_id is not None and not has_fs_folder_access(parent_id, created_by):
+        raise PermissionError('no access to parent folder')
+
     with get_connection() as conn:
         existing = _find_folder_child(conn, parent_id, clean_name)
         if existing:
@@ -759,6 +858,9 @@ def get_or_create_fs_folder(parent_id: int | None, name: str, created_by: int) -
 
 def ensure_fs_folder_path(base_parent_id: int | None, relative_parts: list[str], created_by: int) -> int | None:
     parent_id = base_parent_id
+    if base_parent_id is not None and not has_fs_folder_access(base_parent_id, created_by):
+        raise PermissionError('no access to parent folder')
+
     if not relative_parts:
         return parent_id
 
@@ -790,6 +892,9 @@ def create_fs_file(
     size: int,
     uploaded_by: int,
 ) -> int:
+    if folder_id is not None and not has_fs_folder_access(folder_id, uploaded_by):
+        raise PermissionError('no access to folder')
+
     with get_connection() as conn:
         cur = conn.execute(
             '''
@@ -801,9 +906,9 @@ def create_fs_file(
         return int(cur.lastrowid)
 
 
-def get_fs_file(file_id: int) -> sqlite3.Row | None:
+def get_fs_file(file_id: int, user_id: int) -> sqlite3.Row | None:
     with get_connection() as conn:
-        return conn.execute(
+        row = conn.execute(
             '''
             SELECT
                 ff.id,
@@ -822,6 +927,20 @@ def get_fs_file(file_id: int) -> sqlite3.Row | None:
             ''',
             (file_id,),
         ).fetchone()
+        if not row:
+            return None
+
+        folder_id = row['folder_id']
+        if folder_id is None:
+            current = conn.execute('SELECT role FROM users WHERE id = ? LIMIT 1', (user_id,)).fetchone()
+            is_admin = bool(current and current['role'] == 'admin')
+            if not is_admin and int(row['uploaded_by']) != user_id:
+                return None
+            return row
+
+    if not has_fs_folder_access(int(folder_id), user_id):
+        return None
+    return row
 
 
 def delete_fs_file_if_owner(file_id: int, user_id: int) -> sqlite3.Row | None:
@@ -853,6 +972,172 @@ def fs_usage_for_user(user_id: int) -> int:
         return int(value or 0)
 
 
+def list_fs_folder_members(folder_id: int, user_id: int) -> list[sqlite3.Row]:
+    if not has_fs_folder_access(folder_id, user_id):
+        return []
+
+    with get_connection() as conn:
+        owner = conn.execute(
+            '''
+            SELECT u.id, u.username, 'owner' AS share_role
+            FROM fs_folders f
+            JOIN users u ON u.id = f.created_by
+            WHERE f.id = ?
+            LIMIT 1
+            ''',
+            (folder_id,),
+        ).fetchone()
+
+        shared = conn.execute(
+            '''
+            SELECT u.id, u.username, 'shared' AS share_role
+            FROM fs_folder_members m
+            JOIN users u ON u.id = m.user_id
+            WHERE m.folder_id = ?
+            ORDER BY LOWER(u.username) ASC
+            ''',
+            (folder_id,),
+        ).fetchall()
+
+    members: list[sqlite3.Row] = []
+    if owner:
+        members.append(owner)
+    members.extend(shared)
+    return members
+
+
+def list_fs_shareable_users(folder_id: int, user_id: int) -> list[sqlite3.Row]:
+    if not has_fs_folder_access(folder_id, user_id):
+        return []
+
+    with get_connection() as conn:
+        folder = conn.execute(
+            'SELECT created_by FROM fs_folders WHERE id = ? LIMIT 1',
+            (folder_id,),
+        ).fetchone()
+        if not folder:
+            return []
+
+        owner_id = int(folder['created_by'])
+        shared_ids = {
+            int(row['user_id'])
+            for row in conn.execute(
+                'SELECT user_id FROM fs_folder_members WHERE folder_id = ?',
+                (folder_id,),
+            ).fetchall()
+        }
+
+        users = conn.execute(
+            'SELECT id, username, role FROM users ORDER BY LOWER(username) ASC',
+        ).fetchall()
+
+    return [row for row in users if int(row['id']) != owner_id and int(row['id']) not in shared_ids]
+
+
+def share_fs_folder(folder_id: int, owner_user_id: int, target_user_id: int) -> bool:
+    with get_connection() as conn:
+        folder = conn.execute(
+            'SELECT created_by FROM fs_folders WHERE id = ? LIMIT 1',
+            (folder_id,),
+        ).fetchone()
+        if not folder:
+            return False
+
+        is_admin = _is_admin_user(conn, owner_user_id)
+        if not is_admin and int(folder['created_by']) != owner_user_id:
+            return False
+
+        if int(folder['created_by']) == target_user_id:
+            return False
+
+        target = conn.execute('SELECT id FROM users WHERE id = ? LIMIT 1', (target_user_id,)).fetchone()
+        if not target:
+            return False
+
+        conn.execute(
+            '''
+            INSERT INTO fs_folder_members (folder_id, user_id)
+            VALUES (?, ?)
+            ON CONFLICT(folder_id, user_id) DO NOTHING
+            ''',
+            (folder_id, target_user_id),
+        )
+    return True
+
+
+def unshare_fs_folder(folder_id: int, owner_user_id: int, target_user_id: int) -> bool:
+    with get_connection() as conn:
+        folder = conn.execute(
+            'SELECT created_by FROM fs_folders WHERE id = ? LIMIT 1',
+            (folder_id,),
+        ).fetchone()
+        if not folder:
+            return False
+
+        is_admin = _is_admin_user(conn, owner_user_id)
+        if not is_admin and int(folder['created_by']) != owner_user_id:
+            return False
+
+        conn.execute(
+            'DELETE FROM fs_folder_members WHERE folder_id = ? AND user_id = ?',
+            (folder_id, target_user_id),
+        )
+    return True
+
+
+def list_fs_descendant_folders(root_folder_id: int, user_id: int) -> list[sqlite3.Row]:
+    if not has_fs_folder_access(root_folder_id, user_id):
+        return []
+
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            WITH RECURSIVE descendants AS (
+                SELECT id, parent_id, name
+                FROM fs_folders
+                WHERE id = ?
+                UNION ALL
+                SELECT f.id, f.parent_id, f.name
+                FROM fs_folders f
+                JOIN descendants d ON f.parent_id = d.id
+            )
+            SELECT id, parent_id, name
+            FROM descendants
+            ORDER BY id ASC
+            ''',
+            (root_folder_id,),
+        ).fetchall()
+
+
+def list_fs_files_for_folders(folder_ids: list[int]) -> list[sqlite3.Row]:
+    if not folder_ids:
+        return []
+
+    placeholders = ','.join(['?'] * len(folder_ids))
+    query = f'''
+        SELECT
+            id,
+            folder_id,
+            stored_name,
+            original_name,
+            mime,
+            size,
+            uploaded_by,
+            created_at
+        FROM fs_files
+        WHERE folder_id IN ({placeholders})
+        ORDER BY folder_id ASC, id ASC
+    '''
+
+    with get_connection() as conn:
+        return conn.execute(query, tuple(folder_ids)).fetchall()
+
+
+def list_fs_accessible_root_folders(user_id: int) -> list[sqlite3.Row]:
+    rows = list_fs_folders(None, user_id)
+    return [row for row in rows if row['parent_id'] is None]
+
+
 def fs_total_usage() -> int:
     with get_connection() as conn:
         value = conn.execute('SELECT COALESCE(SUM(size), 0) FROM fs_files').fetchone()[0]
@@ -863,6 +1148,7 @@ def fs_files_count() -> int:
     with get_connection() as conn:
         value = conn.execute('SELECT COUNT(*) FROM fs_files').fetchone()[0]
         return int(value or 0)
+
 
 def stats() -> dict[str, Any]:
     with get_connection() as conn:

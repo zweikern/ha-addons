@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import mimetypes
 import secrets
+import tempfile
+import zipfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
 from auth import hash_password, verify_password
@@ -32,22 +35,30 @@ from db import (
     get_attachment_if_accessible,
     get_fs_file,
     get_fs_folder,
+    has_fs_folder_access,
     get_task_if_accessible,
     get_user_by_id,
     get_user_by_username,
     get_or_create_fs_folder,
     init_db,
     list_accessible_projects,
+    list_fs_accessible_root_folders,
     list_fs_breadcrumbs,
+    list_fs_descendant_folders,
+    list_fs_files_for_folders,
     list_fs_files,
+    list_fs_folder_members,
     list_fs_folders,
+    list_fs_shareable_users,
     list_project_attachments,
     list_project_history,
     list_project_members,
     list_project_tasks,
     list_users,
     remove_project_member,
+    share_fs_folder,
     stats,
+    unshare_fs_folder,
     update_project,
     update_task_if_accessible,
     update_task_status_if_accessible,
@@ -222,6 +233,85 @@ def format_bytes(num: int) -> str:
 
 def is_image_mime(mime: str) -> bool:
     return mime.startswith('image/')
+
+
+def zip_safe_name(raw: str, fallback: str) -> str:
+    name = raw.replace('\\', '/').strip().strip('/')
+    name = Path(name).name.strip()
+    if not name or name in {'.', '..'}:
+        name = fallback
+    return name.replace('/', '_')
+
+
+def _remove_temp_file(path: str) -> None:
+    try:
+        Path(path).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def create_folder_zip(folder_id: int, user_id: int, zip_prefix: str | None = None) -> tuple[Path | None, str]:
+    folders = list_fs_descendant_folders(folder_id, user_id)
+    if not folders:
+        return None, 'folder_not_found'
+
+    folder_by_id = {int(row['id']): row for row in folders}
+    root = folder_by_id.get(folder_id)
+    if not root:
+        return None, 'folder_not_found'
+
+    prefix = zip_safe_name(zip_prefix or str(root['name']), f'folder-{folder_id}')
+    folder_ids = sorted(folder_by_id.keys())
+    files = list_fs_files_for_folders(folder_ids)
+
+    _fd, temp_path = tempfile.mkstemp(prefix='household-folder-', suffix='.zip')
+    Path(temp_path).unlink(missing_ok=True)
+    zip_path = Path(temp_path)
+
+    relative_folder: dict[int, str] = {folder_id: prefix}
+    unresolved = set(folder_ids)
+    while unresolved:
+        progressed = False
+        for current_id in list(unresolved):
+            if current_id == folder_id:
+                unresolved.remove(current_id)
+                progressed = True
+                continue
+
+            row = folder_by_id[current_id]
+            parent = row['parent_id']
+            if parent is None:
+                relative_folder[current_id] = f"{prefix}/{zip_safe_name(str(row['name']), f'folder-{current_id}')}"
+                unresolved.remove(current_id)
+                progressed = True
+                continue
+
+            parent_id = int(parent)
+            if parent_id in relative_folder:
+                name = zip_safe_name(str(row['name']), f'folder-{current_id}')
+                relative_folder[current_id] = f"{relative_folder[parent_id]}/{name}"
+                unresolved.remove(current_id)
+                progressed = True
+        if not progressed:
+            break
+
+    with zipfile.ZipFile(zip_path, mode='w', compression=zipfile.ZIP_DEFLATED) as archive:
+        for current_id in folder_ids:
+            folder_path = relative_folder.get(current_id, prefix)
+            archive.writestr(f'{folder_path}/', '')
+
+        for item in files:
+            stored_name = str(item['stored_name'])
+            file_disk_path = FILESHARE_DIR / stored_name
+            if not file_disk_path.exists() or not file_disk_path.is_file():
+                continue
+
+            folder_path = relative_folder.get(int(item['folder_id']), prefix)
+            target_name = zip_safe_name(str(item['original_name']), f"file-{item['id']}")
+            archive_name = f'{folder_path}/{target_name}'
+            archive.write(file_disk_path, archive_name)
+
+    return zip_path, f'{prefix}.zip'
 
 
 def build_project_nav(projects: list[Any]) -> list[dict[str, Any]]:
@@ -852,22 +942,31 @@ def files_page(request: Request, folder_id: int | None = None):
     if response:
         return response
 
+    user_id = int(user['id'])
+
     active_folder = None
     if folder_id is not None:
-        active_folder = get_fs_folder(folder_id)
+        active_folder = get_fs_folder(folder_id, user_id)
         if not active_folder:
             return redirect(files_url(error='folder_not_found'))
 
-    folders = list_fs_folders(folder_id)
-    files = [dict(item) for item in list_fs_files(folder_id)]
+    folders = list_fs_folders(folder_id, user_id)
+    files = [dict(item) for item in list_fs_files(folder_id, user_id)]
     for item in files:
         item['is_image'] = is_image_mime(str(item.get('mime') or ''))
 
-    breadcrumbs = list_fs_breadcrumbs(folder_id)
-    usage_bytes = fs_usage_for_user(int(user['id']))
+    breadcrumbs = list_fs_breadcrumbs(folder_id, user_id)
+    usage_bytes = fs_usage_for_user(user_id)
     quota_bytes = USER_FILESHARE_QUOTA_BYTES
     free_bytes = max(0, quota_bytes - usage_bytes)
     usage_percent = min(100, int((usage_bytes / quota_bytes) * 100)) if quota_bytes else 0
+
+    can_manage_share = bool(
+        active_folder
+        and (user['role'] == 'admin' or int(active_folder['created_by']) == user_id)
+    )
+    folder_members = list_fs_folder_members(int(active_folder['id']), user_id) if active_folder else []
+    shareable_users = list_fs_shareable_users(int(active_folder['id']), user_id) if active_folder else []
 
     return templates.TemplateResponse(
         request,
@@ -886,6 +985,9 @@ def files_page(request: Request, folder_id: int | None = None):
             'free_text': format_bytes(free_bytes),
             'usage_percent': usage_percent,
             'max_file_mb': MAX_FILESHARE_BYTES // (1024 * 1024),
+            'can_manage_share': can_manage_share,
+            'folder_members': folder_members,
+            'shareable_users': shareable_users,
             'csrf_token': csrf_token(request),
             'files_error': request.query_params.get('error'),
         },
@@ -903,6 +1005,8 @@ def create_folder_submit(
     if response:
         return response
 
+    user_id = int(user['id'])
+
     if not validate_csrf(request, csrf):
         return redirect(files_url(error='csrf'))
 
@@ -911,14 +1015,18 @@ def create_folder_submit(
     except ValueError:
         return redirect(files_url(error='invalid_parent'))
 
-    if parent_folder_id is not None and not get_fs_folder(parent_folder_id):
-        return redirect(files_url(error='invalid_parent'))
+    if parent_folder_id is not None and not has_fs_folder_access(parent_folder_id, user_id):
+        return redirect(files_url(error='forbidden'))
 
     folder_name = name.strip()
     if not folder_name:
         return redirect(files_url(parent_folder_id, 'missing_name'))
 
-    created_id = get_or_create_fs_folder(parent_folder_id, folder_name, int(user['id']))
+    try:
+        created_id = get_or_create_fs_folder(parent_folder_id, folder_name, user_id)
+    except PermissionError:
+        return redirect(files_url(parent_folder_id, 'forbidden'))
+
     return redirect(files_url(created_id))
 
 
@@ -934,6 +1042,8 @@ async def upload_files_submit(
     if response:
         return response
 
+    user_id = int(user['id'])
+
     if not validate_csrf(request, csrf):
         return redirect(files_url(error='csrf'))
 
@@ -942,70 +1052,76 @@ async def upload_files_submit(
     except ValueError:
         return redirect(files_url(error='invalid_parent'))
 
-    if parent_folder_id is not None and not get_fs_folder(parent_folder_id):
-        return redirect(files_url(error='invalid_parent'))
+    if parent_folder_id is not None and not has_fs_folder_access(parent_folder_id, user_id):
+        return redirect(files_url(error='forbidden'))
 
     if not files:
         return redirect(files_url(parent_folder_id, 'missing_file'))
 
     uploaded = 0
-    usage_total = fs_usage_for_user(int(user['id']))
+    usage_total = fs_usage_for_user(user_id)
     upload_error: str | None = None
 
-    for idx, upload in enumerate(files):
-        if not upload.filename:
+    try:
+        for idx, upload in enumerate(files):
+            if not upload.filename:
+                await upload.close()
+                continue
+
+            original_name = normalize_name(upload.filename, f'upload-{idx + 1}.bin')
+            rel_path = relative_path[idx] if idx < len(relative_path) else ''
+            target_parts = split_relative_dir(rel_path)
+            target_folder_id = ensure_fs_folder_path(parent_folder_id, target_parts, user_id)
+
+            guessed_mime = mimetypes.guess_type(original_name)[0]
+            mime = (upload.content_type or guessed_mime or 'application/octet-stream').strip()[:255]
+            stored_name = secrets.token_hex(24)
+            target_path = FILESHARE_DIR / stored_name
+
+            too_large = False
+            quota_exceeded = False
+            file_size = 0
+
+            with target_path.open('wb') as fh:
+                while True:
+                    chunk = await upload.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    file_size += len(chunk)
+
+                    if file_size > MAX_FILESHARE_BYTES:
+                        too_large = True
+                        break
+
+                    if usage_total + file_size > USER_FILESHARE_QUOTA_BYTES:
+                        quota_exceeded = True
+                        break
+
+                    fh.write(chunk)
+
             await upload.close()
-            continue
 
-        original_name = normalize_name(upload.filename, f'upload-{idx + 1}.bin')
-        rel_path = relative_path[idx] if idx < len(relative_path) else ''
-        target_parts = split_relative_dir(rel_path)
-        target_folder_id = ensure_fs_folder_path(parent_folder_id, target_parts, int(user['id']))
+            if too_large or quota_exceeded:
+                if target_path.exists():
+                    target_path.unlink()
+                upload_error = 'file_too_large' if too_large else 'quota_exceeded'
+                break
 
-        guessed_mime = mimetypes.guess_type(original_name)[0]
-        mime = (upload.content_type or guessed_mime or 'application/octet-stream').strip()[:255]
-        stored_name = secrets.token_hex(24)
-        target_path = FILESHARE_DIR / stored_name
-
-        too_large = False
-        quota_exceeded = False
-        file_size = 0
-
-        with target_path.open('wb') as fh:
-            while True:
-                chunk = await upload.read(1024 * 1024)
-                if not chunk:
-                    break
-                file_size += len(chunk)
-
-                if file_size > MAX_FILESHARE_BYTES:
-                    too_large = True
-                    break
-
-                if usage_total + file_size > USER_FILESHARE_QUOTA_BYTES:
-                    quota_exceeded = True
-                    break
-
-                fh.write(chunk)
-
-        await upload.close()
-
-        if too_large or quota_exceeded:
-            if target_path.exists():
-                target_path.unlink()
-            upload_error = 'file_too_large' if too_large else 'quota_exceeded'
-            break
-
-        create_fs_file(
-            folder_id=target_folder_id,
-            stored_name=stored_name,
-            original_name=original_name,
-            mime=mime,
-            size=file_size,
-            uploaded_by=int(user['id']),
-        )
-        usage_total += file_size
-        uploaded += 1
+            create_fs_file(
+                folder_id=target_folder_id,
+                stored_name=stored_name,
+                original_name=original_name,
+                mime=mime,
+                size=file_size,
+                uploaded_by=user_id,
+            )
+            usage_total += file_size
+            uploaded += 1
+    except PermissionError:
+        return redirect(files_url(parent_folder_id, 'forbidden'))
+    except Exception as err:  # pragma: no cover
+        print(f'[error] Upload failed: {err}')
+        return redirect(files_url(parent_folder_id, 'upload_failed'))
 
     if upload_error:
         return redirect(files_url(parent_folder_id, upload_error))
@@ -1022,7 +1138,7 @@ def files_download(request: Request, file_id: int):
     if response:
         return response
 
-    item = get_fs_file(file_id)
+    item = get_fs_file(file_id, int(user['id']))
     if not item:
         return HTMLResponse('File not found', status_code=404)
 
@@ -1046,7 +1162,7 @@ def files_view(request: Request, file_id: int):
     if response:
         return response
 
-    item = get_fs_file(file_id)
+    item = get_fs_file(file_id, int(user['id']))
     if not item:
         return HTMLResponse('File not found', status_code=404)
 
@@ -1061,6 +1177,101 @@ def files_view(request: Request, file_id: int):
         media_type=str(item['mime']) or 'application/octet-stream',
         filename=filename,
         headers=headers,
+    )
+
+
+@app.get('/files/folders/{folder_id}/download')
+def download_folder_zip(request: Request, folder_id: int):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    user_id = int(user['id'])
+    zip_path, zip_name_or_error = create_folder_zip(folder_id, user_id)
+    if not zip_path:
+        return redirect(files_url(folder_id, zip_name_or_error))
+
+    return FileResponse(
+        path=zip_path,
+        media_type='application/zip',
+        filename=zip_name_or_error,
+        background=BackgroundTask(_remove_temp_file, str(zip_path)),
+    )
+
+
+@app.get('/files/download-all')
+def download_all_folders_zip(request: Request):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    user_id = int(user['id'])
+    roots = list_fs_accessible_root_folders(user_id)
+    if not roots:
+        return redirect(files_url(error='no_folders'))
+
+    _fd, temp_path = tempfile.mkstemp(prefix='household-all-folders-', suffix='.zip')
+    Path(temp_path).unlink(missing_ok=True)
+    zip_path = Path(temp_path)
+
+    with zipfile.ZipFile(zip_path, mode='w', compression=zipfile.ZIP_DEFLATED) as archive:
+        added = False
+        for root in roots:
+            root_id = int(root['id'])
+            folders = list_fs_descendant_folders(root_id, user_id)
+            if not folders:
+                continue
+
+            folder_by_id = {int(row['id']): row for row in folders}
+            prefix = zip_safe_name(str(root['name']), f'folder-{root_id}')
+            relative_folder: dict[int, str] = {root_id: prefix}
+            unresolved = set(folder_by_id.keys())
+
+            while unresolved:
+                progressed = False
+                for current_id in list(unresolved):
+                    if current_id == root_id:
+                        unresolved.remove(current_id)
+                        progressed = True
+                        continue
+
+                    row = folder_by_id[current_id]
+                    parent = row['parent_id']
+                    if parent is None:
+                        relative_folder[current_id] = f"{prefix}/{zip_safe_name(str(row['name']), f'folder-{current_id}')}"
+                        unresolved.remove(current_id)
+                        progressed = True
+                        continue
+
+                    parent_id = int(parent)
+                    if parent_id in relative_folder:
+                        relative_folder[current_id] = f"{relative_folder[parent_id]}/{zip_safe_name(str(row['name']), f'folder-{current_id}')}"
+                        unresolved.remove(current_id)
+                        progressed = True
+                if not progressed:
+                    break
+
+            folder_ids = sorted(folder_by_id.keys())
+            for fid in folder_ids:
+                archive.writestr(f"{relative_folder.get(fid, prefix)}/", '')
+
+            for item in list_fs_files_for_folders(folder_ids):
+                file_disk_path = FILESHARE_DIR / str(item['stored_name'])
+                if not file_disk_path.exists() or not file_disk_path.is_file():
+                    continue
+                base = relative_folder.get(int(item['folder_id']), prefix)
+                file_name = zip_safe_name(str(item['original_name']), f"file-{item['id']}")
+                archive.write(file_disk_path, f'{base}/{file_name}')
+                added = True
+
+        if not added:
+            archive.writestr('README.txt', 'Keine Dateien vorhanden.')
+
+    return FileResponse(
+        path=zip_path,
+        media_type='application/zip',
+        filename='household-folders.zip',
+        background=BackgroundTask(_remove_temp_file, str(zip_path)),
     )
 
 
@@ -1085,7 +1296,7 @@ def delete_file_submit(
 
     row = delete_fs_file_if_owner(file_id, int(user['id']))
     if not row:
-        existing = get_fs_file(file_id)
+        existing = get_fs_file(file_id, int(user['id']))
         if existing:
             return redirect(files_url(redirect_folder_id, 'forbidden_delete'))
         return redirect(files_url(redirect_folder_id, 'file_not_found'))
@@ -1095,6 +1306,46 @@ def delete_file_submit(
         file_path.unlink()
 
     return redirect(files_url(redirect_folder_id))
+
+
+@app.post('/files/{folder_id}/share')
+def share_folder_submit(
+    request: Request,
+    folder_id: int,
+    target_user_id: int = Form(...),
+    csrf: str = Form(...),
+):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    if not validate_csrf(request, csrf):
+        return redirect(files_url(folder_id, 'csrf'))
+
+    if not share_fs_folder(folder_id, int(user['id']), target_user_id):
+        return redirect(files_url(folder_id, 'share_failed'))
+
+    return redirect(files_url(folder_id))
+
+
+@app.post('/files/{folder_id}/share/{target_user_id}/remove')
+def unshare_folder_submit(
+    request: Request,
+    folder_id: int,
+    target_user_id: int,
+    csrf: str = Form(...),
+):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    if not validate_csrf(request, csrf):
+        return redirect(files_url(folder_id, 'csrf'))
+
+    if not unshare_fs_folder(folder_id, int(user['id']), target_user_id):
+        return redirect(files_url(folder_id, 'remove_failed'))
+
+    return redirect(files_url(folder_id))
 
 
 @app.get('/users', response_class=HTMLResponse)

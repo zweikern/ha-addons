@@ -179,6 +179,25 @@
       submitButton.textContent = 'Upload läuft ...';
     }
 
+    const relativeHiddenInputs = form.querySelectorAll('input[data-relative-path="1"]');
+    relativeHiddenInputs.forEach((el) => el.remove());
+
+    if (typeof DataTransfer !== 'undefined') {
+      const transfer = new DataTransfer();
+      for (const item of queue) {
+        transfer.items.add(item.file);
+        const hidden = document.createElement('input');
+        hidden.type = 'hidden';
+        hidden.name = 'relative_path';
+        hidden.value = item.relativePath || item.file.name;
+        hidden.setAttribute('data-relative-path', '1');
+        form.appendChild(hidden);
+      }
+      filesInput.files = transfer.files;
+      form.submit();
+      return;
+    }
+
     const formData = new FormData();
     formData.append('csrf', form.querySelector('input[name="csrf"]').value);
     formData.append('parent_id', form.querySelector('input[name="parent_id"]').value);
