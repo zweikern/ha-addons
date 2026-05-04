@@ -1,6 +1,6 @@
 name: "HA Uptime & Outage Monitor"
 slug: "ha_uptime_outage_monitor"
-version: "0.1.0"
+version: "0.1.1"
 description: "Local heartbeat, restart and connectivity downtime monitor for Home Assistant."
 url: "https://developers.home-assistant.io/docs/add-ons/"
 arch:
