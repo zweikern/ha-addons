@@ -823,6 +823,29 @@ th {
   line-height: 1;
 }
 
+.image-preview-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 46px;
+  height: 46px;
+  border-radius: 999px;
+  border: 0;
+  background: rgba(15, 23, 42, 0.58);
+  color: #fff;
+  font-size: 1.35rem;
+  line-height: 1;
+  z-index: 2;
+}
+
+.image-preview-nav.prev {
+  left: 0.8rem;
+}
+
+.image-preview-nav.next {
+  right: 0.8rem;
+}
+
 body.has-modal-open {
   overflow: hidden;
 }

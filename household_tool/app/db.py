@@ -136,6 +136,12 @@ def init_db() -> None:
         if not _has_column(conn, 'tasks', 'completed_at'):
             conn.execute('ALTER TABLE tasks ADD COLUMN completed_at TEXT')
 
+        if not _has_column(conn, 'users', 'email'):
+            conn.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
+
+        if not _has_column(conn, 'users', 'mail_opt_in'):
+            conn.execute('ALTER TABLE users ADD COLUMN mail_opt_in INTEGER NOT NULL DEFAULT 0')
+
 
 def get_user_by_username(username: str) -> sqlite3.Row | None:
     with get_connection() as conn:
@@ -150,20 +156,68 @@ def get_user_by_id(user_id: int) -> sqlite3.Row | None:
 def list_users() -> list[sqlite3.Row]:
     with get_connection() as conn:
         return conn.execute(
-            'SELECT id, username, role, created_at FROM users ORDER BY username ASC'
+            '''
+            SELECT id, username, role, email, mail_opt_in, created_at
+            FROM users
+            ORDER BY username ASC
+            '''
         ).fetchall()
 
 
-def create_user(username: str, password_hash: str, role: str) -> bool:
+def create_user(
+    username: str,
+    password_hash: str,
+    role: str,
+    email: str = '',
+    mail_opt_in: bool = False,
+) -> bool:
     try:
         with get_connection() as conn:
             conn.execute(
-                'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
-                (username, password_hash, role),
+                '''
+                INSERT INTO users (username, password_hash, role, email, mail_opt_in)
+                VALUES (?, ?, ?, ?, ?)
+                ''',
+                (username, password_hash, role, email.strip(), 1 if mail_opt_in else 0),
             )
         return True
     except sqlite3.IntegrityError:
         return False
+
+
+def update_user_profile(
+    user_id: int,
+    email: str,
+    mail_opt_in: bool,
+    new_password_hash: str | None = None,
+) -> bool:
+    with get_connection() as conn:
+        existing = conn.execute(
+            'SELECT id FROM users WHERE id = ? LIMIT 1',
+            (user_id,),
+        ).fetchone()
+        if not existing:
+            return False
+
+        if new_password_hash:
+            conn.execute(
+                '''
+                UPDATE users
+                SET email = ?, mail_opt_in = ?, password_hash = ?
+                WHERE id = ?
+                ''',
+                (email.strip(), 1 if mail_opt_in else 0, new_password_hash, user_id),
+            )
+        else:
+            conn.execute(
+                '''
+                UPDATE users
+                SET email = ?, mail_opt_in = ?
+                WHERE id = ?
+                ''',
+                (email.strip(), 1 if mail_opt_in else 0, user_id),
+            )
+    return True
 
 
 def ensure_admin_account(username: str, password_hash: str) -> bool:

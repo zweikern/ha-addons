@@ -59,6 +59,7 @@ from db import (
     share_fs_folder,
     stats,
     unshare_fs_folder,
+    update_user_profile,
     update_project,
     update_task_if_accessible,
     update_task_status_if_accessible,
@@ -75,6 +76,7 @@ VALID_ROLES = {'admin', 'user'}
 VALID_MEMBER_ROLES = {'member', 'manager'}
 VALID_TASK_STATUS = {'open', 'in_progress', 'done'}
 VALID_PROJECT_VIEWS = {'all', 'open', 'done', 'focus'}
+MIN_PASSWORD_LENGTH = 8
 
 app = FastAPI(title='Household Tool')
 app.mount('/static', StaticFiles(directory='/app/static'), name='static')
@@ -1348,6 +1350,72 @@ def unshare_folder_submit(
     return redirect(files_url(folder_id))
 
 
+@app.get('/account', response_class=HTMLResponse)
+def account_page(request: Request):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    return templates.TemplateResponse(
+        request,
+        'account.html',
+        {
+            'user': user,
+            'csrf_token': csrf_token(request),
+            'account_error': request.query_params.get('error'),
+        },
+    )
+
+
+@app.post('/account')
+def account_submit(
+    request: Request,
+    email: str = Form(default=''),
+    mail_opt_in: str = Form(default='0'),
+    current_password: str = Form(default=''),
+    new_password: str = Form(default=''),
+    confirm_password: str = Form(default=''),
+    csrf: str = Form(...),
+):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    if not validate_csrf(request, csrf):
+        return redirect('/account?error=csrf')
+
+    email_clean = email.strip()
+    opt_in = mail_opt_in == '1'
+
+    current_password = current_password.strip()
+    new_password = new_password.strip()
+    confirm_password = confirm_password.strip()
+
+    new_hash: str | None = None
+    wants_password_change = bool(current_password or new_password or confirm_password)
+    if wants_password_change:
+        if not current_password or not new_password or not confirm_password:
+            return redirect('/account?error=password_fields_required')
+        if not verify_password(current_password, user['password_hash']):
+            return redirect('/account?error=current_password_invalid')
+        if new_password != confirm_password:
+            return redirect('/account?error=password_mismatch')
+        if len(new_password) < MIN_PASSWORD_LENGTH:
+            return redirect('/account?error=password_too_short')
+        new_hash = hash_password(new_password)
+
+    ok = update_user_profile(
+        user_id=int(user['id']),
+        email=email_clean,
+        mail_opt_in=opt_in,
+        new_password_hash=new_hash,
+    )
+    if not ok:
+        return redirect('/account?error=update_failed')
+
+    return redirect('/account?error=profile_saved')
+
+
 @app.get('/users', response_class=HTMLResponse)
 def users_page(request: Request):
     user, response = require_admin(request)
@@ -1372,6 +1440,8 @@ def create_user_submit(
     username: str = Form(...),
     password: str = Form(...),
     role: str = Form(default='user'),
+    email: str = Form(default=''),
+    mail_opt_in: str = Form(default='0'),
     csrf: str = Form(...),
 ):
     admin_user, response = require_admin(request)
@@ -1385,11 +1455,19 @@ def create_user_submit(
     password = password.strip()
     if not username or not password:
         return redirect('/users?error=missing_fields')
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return redirect('/users?error=password_too_short')
 
     if role not in VALID_ROLES:
         return redirect('/users?error=invalid_role')
 
-    ok = create_user(username=username, password_hash=hash_password(password), role=role)
+    ok = create_user(
+        username=username,
+        password_hash=hash_password(password),
+        role=role,
+        email=email.strip(),
+        mail_opt_in=mail_opt_in == '1',
+    )
     if not ok:
         return redirect('/users?error=user_exists')
 

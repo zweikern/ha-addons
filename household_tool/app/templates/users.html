@@ -3,6 +3,10 @@
 {% block content %}
 <h1>Benutzerverwaltung</h1>
 
+{% if error == 'password_too_short' %}
+  <div class="alert">Passwort zu kurz. Bitte mindestens 8 Zeichen verwenden.</div>
+{% endif %}
+
 <section class="card">
   <h2>Benutzer anlegen</h2>
   <form method="post" action="/users" class="form-grid">
@@ -13,6 +17,14 @@
 
     <label for="password">Passwort</label>
     <input id="password" name="password" type="password" required>
+
+    <label for="email">E-Mail (optional)</label>
+    <input id="email" name="email" type="email" placeholder="name@example.com">
+
+    <label class="inline-check" for="mail_opt_in">
+      <input id="mail_opt_in" name="mail_opt_in" type="checkbox" value="1">
+      Mail Opt-in aktivieren
+    </label>
 
     <label for="role">Rolle</label>
     <select id="role" name="role">
@@ -32,6 +44,8 @@
         <tr>
           <th>Benutzername</th>
           <th>Rolle</th>
+          <th>E-Mail</th>
+          <th>Mail Opt-in</th>
           <th>Angelegt</th>
         </tr>
       </thead>
@@ -40,6 +54,8 @@
           <tr>
             <td>{{ account.username }}</td>
             <td>{{ account.role }}</td>
+            <td>{{ account.email or '-' }}</td>
+            <td>{{ 'Ja' if account.mail_opt_in else 'Nein' }}</td>
             <td>{{ account.created_at }}</td>
           </tr>
         {% endfor %}

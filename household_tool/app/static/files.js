@@ -234,9 +234,28 @@
   const previewImage = document.getElementById('image-preview-content');
   const previewCaption = document.getElementById('image-preview-caption');
   const previewClose = document.getElementById('image-preview-close');
+  const previewPrev = document.getElementById('image-preview-prev');
+  const previewNext = document.getElementById('image-preview-next');
+  const previewButtons = Array.from(document.querySelectorAll('.image-thumb-button'));
+  let previewIndex = -1;
 
   if (previewModal) {
     previewModal.hidden = true;
+  }
+
+  function showPreviewAt(index) {
+    if (!previewModal || !previewImage || !previewCaption || !previewButtons.length) {
+      return;
+    }
+    const normalized = (index + previewButtons.length) % previewButtons.length;
+    const button = previewButtons[normalized];
+    const src = button.getAttribute('data-preview-src');
+    const name = button.getAttribute('data-preview-name') || '';
+    previewImage.src = src;
+    previewCaption.textContent = name;
+    previewModal.hidden = false;
+    document.body.classList.add('has-modal-open');
+    previewIndex = normalized;
   }
 
   function closePreview() {
@@ -247,19 +266,33 @@
     document.body.classList.remove('has-modal-open');
     previewImage.src = '';
     previewCaption.textContent = '';
+    previewIndex = -1;
   }
 
   if (previewModal && previewImage && previewCaption && previewClose) {
-    document.querySelectorAll('.image-thumb-button').forEach((button) => {
+    previewButtons.forEach((button, idx) => {
       button.addEventListener('click', function () {
-        const src = button.getAttribute('data-preview-src');
-        const name = button.getAttribute('data-preview-name') || '';
-        previewImage.src = src;
-        previewCaption.textContent = name;
-        previewModal.hidden = false;
-        document.body.classList.add('has-modal-open');
+        showPreviewAt(idx);
       });
     });
+
+    if (previewPrev) {
+      previewPrev.addEventListener('click', function () {
+        if (previewIndex === -1) {
+          return;
+        }
+        showPreviewAt(previewIndex - 1);
+      });
+    }
+
+    if (previewNext) {
+      previewNext.addEventListener('click', function () {
+        if (previewIndex === -1) {
+          return;
+        }
+        showPreviewAt(previewIndex + 1);
+      });
+    }
 
     previewClose.addEventListener('click', closePreview);
     previewModal.addEventListener('click', function (event) {
@@ -271,6 +304,10 @@
     window.addEventListener('keydown', function (event) {
       if (event.key === 'Escape') {
         closePreview();
+      } else if (event.key === 'ArrowLeft' && previewIndex !== -1) {
+        showPreviewAt(previewIndex - 1);
+      } else if (event.key === 'ArrowRight' && previewIndex !== -1) {
+        showPreviewAt(previewIndex + 1);
       }
     });
   }
