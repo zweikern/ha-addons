@@ -5,6 +5,18 @@
 
 {% if error == 'password_too_short' %}
   <div class="alert">Passwort zu kurz. Bitte mindestens 8 Zeichen verwenden.</div>
+{% elif error == 'last_admin' %}
+  <div class="alert">Der letzte Admin kann nicht herabgestuft oder geloescht werden.</div>
+{% elif error == 'cannot_delete_last_user' %}
+  <div class="alert">Der letzte verbleibende Benutzer kann nicht geloescht werden.</div>
+{% elif error == 'user_not_found' %}
+  <div class="alert">Benutzer wurde nicht gefunden.</div>
+{% elif error == 'delete_failed' %}
+  <div class="alert">Benutzer konnte nicht geloescht werden.</div>
+{% elif error == 'user_updated' %}
+  <div class="card" style="border-color:#86efac;background:#f0fdf4;color:#166534;">Benutzer erfolgreich aktualisiert.</div>
+{% elif error == 'user_deleted' %}
+  <div class="card" style="border-color:#86efac;background:#f0fdf4;color:#166534;">Benutzer erfolgreich geloescht.</div>
 {% endif %}
 
 <section class="card">
@@ -47,16 +59,50 @@
           <th>E-Mail</th>
           <th>Mail Opt-in</th>
           <th>Angelegt</th>
+          <th>Aktionen</th>
         </tr>
       </thead>
       <tbody>
         {% for account in users %}
           <tr>
-            <td>{{ account.username }}</td>
-            <td>{{ account.role }}</td>
-            <td>{{ account.email or '-' }}</td>
-            <td>{{ 'Ja' if account.mail_opt_in else 'Nein' }}</td>
+            <td>
+              <input form="edit-user-{{ account.id }}" name="username" value="{{ account.username }}" required>
+            </td>
+            <td>
+              <select form="edit-user-{{ account.id }}" name="role">
+                <option value="user" {% if account.role == 'user' %}selected{% endif %}>user</option>
+                <option value="admin" {% if account.role == 'admin' %}selected{% endif %}>admin</option>
+              </select>
+            </td>
+            <td>
+              <input form="edit-user-{{ account.id }}" name="email" type="email" value="{{ account.email or '' }}" placeholder="name@example.com">
+            </td>
+            <td>
+              <label class="inline-check">
+                <input
+                  form="edit-user-{{ account.id }}"
+                  type="checkbox"
+                  name="mail_opt_in"
+                  value="1"
+                  {% if account.mail_opt_in %}checked{% endif %}
+                >
+                Ja
+              </label>
+            </td>
             <td>{{ account.created_at }}</td>
+            <td>
+              <form id="edit-user-{{ account.id }}" method="post" action="/users/{{ account.id }}/edit" class="task-actions">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <input name="new_password" type="password" placeholder="Neues Passwort (optional)">
+                <button type="submit" class="button-small">Speichern</button>
+              </form>
+              {% if account.id != current_user_id %}
+                <form method="post" action="/users/{{ account.id }}/delete" class="task-actions">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <button type="submit" class="button-small danger">Loeschen</button>
+                </form>
+              {% endif %}
+            </td>
           </tr>
         {% endfor %}
       </tbody>

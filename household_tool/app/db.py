@@ -220,6 +220,145 @@ def update_user_profile(
     return True
 
 
+def count_admin_users() -> int:
+    with get_connection() as conn:
+        value = conn.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'").fetchone()[0]
+        return int(value or 0)
+
+
+def find_reassignment_user(
+    exclude_user_id: int,
+    preferred_user_id: int | None = None,
+) -> int | None:
+    with get_connection() as conn:
+        if preferred_user_id and preferred_user_id != exclude_user_id:
+            preferred = conn.execute(
+                'SELECT id FROM users WHERE id = ? LIMIT 1',
+                (preferred_user_id,),
+            ).fetchone()
+            if preferred:
+                return int(preferred['id'])
+
+        row = conn.execute(
+            '''
+            SELECT id
+            FROM users
+            WHERE id != ?
+            ORDER BY
+              CASE WHEN role = 'admin' THEN 0 ELSE 1 END,
+              id ASC
+            LIMIT 1
+            ''',
+            (exclude_user_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return int(row['id'])
+
+
+def update_user_by_admin(
+    user_id: int,
+    username: str,
+    role: str,
+    email: str,
+    mail_opt_in: bool,
+    new_password_hash: str | None = None,
+) -> str:
+    with get_connection() as conn:
+        target = conn.execute(
+            'SELECT id, role FROM users WHERE id = ? LIMIT 1',
+            (user_id,),
+        ).fetchone()
+        if not target:
+            return 'not_found'
+
+        if target['role'] == 'admin' and role != 'admin':
+            admin_count = conn.execute(
+                "SELECT COUNT(*) FROM users WHERE role = 'admin'"
+            ).fetchone()[0]
+            if int(admin_count or 0) <= 1:
+                return 'last_admin'
+
+        try:
+            if new_password_hash:
+                conn.execute(
+                    '''
+                    UPDATE users
+                    SET username = ?, role = ?, email = ?, mail_opt_in = ?, password_hash = ?
+                    WHERE id = ?
+                    ''',
+                    (
+                        username.strip(),
+                        role,
+                        email.strip(),
+                        1 if mail_opt_in else 0,
+                        new_password_hash,
+                        user_id,
+                    ),
+                )
+            else:
+                conn.execute(
+                    '''
+                    UPDATE users
+                    SET username = ?, role = ?, email = ?, mail_opt_in = ?
+                    WHERE id = ?
+                    ''',
+                    (username.strip(), role, email.strip(), 1 if mail_opt_in else 0, user_id),
+                )
+        except sqlite3.IntegrityError:
+            return 'username_taken'
+
+    return 'ok'
+
+
+def delete_user_with_reassignment(user_id: int, reassignment_user_id: int) -> str:
+    if user_id == reassignment_user_id:
+        return 'invalid_reassignment'
+
+    with get_connection() as conn:
+        target = conn.execute(
+            'SELECT id, role FROM users WHERE id = ? LIMIT 1',
+            (user_id,),
+        ).fetchone()
+        if not target:
+            return 'not_found'
+
+        replacement = conn.execute(
+            'SELECT id FROM users WHERE id = ? LIMIT 1',
+            (reassignment_user_id,),
+        ).fetchone()
+        if not replacement:
+            return 'invalid_reassignment'
+
+        if target['role'] == 'admin':
+            admin_count = conn.execute(
+                "SELECT COUNT(*) FROM users WHERE role = 'admin'"
+            ).fetchone()[0]
+            if int(admin_count or 0) <= 1:
+                return 'last_admin'
+
+        conn.execute(
+            'UPDATE projects SET created_by = ? WHERE created_by = ?',
+            (reassignment_user_id, user_id),
+        )
+        conn.execute(
+            'UPDATE fs_folders SET created_by = ? WHERE created_by = ?',
+            (reassignment_user_id, user_id),
+        )
+        conn.execute(
+            'UPDATE fs_files SET uploaded_by = ? WHERE uploaded_by = ?',
+            (reassignment_user_id, user_id),
+        )
+        conn.execute(
+            'UPDATE tasks SET assignee_id = NULL WHERE assignee_id = ?',
+            (user_id,),
+        )
+
+        conn.execute('DELETE FROM users WHERE id = ?', (user_id,))
+
+    return 'ok'
+
+
 def ensure_admin_account(username: str, password_hash: str) -> bool:
     with get_connection() as conn:
         admin_exists = conn.execute(

@@ -26,10 +26,12 @@ from db import (
     create_project,
     create_task,
     create_user,
+    delete_user_with_reassignment,
     delete_fs_file_if_owner,
     ensure_admin_account,
     ensure_admin_credentials,
     ensure_fs_folder_path,
+    find_reassignment_user,
     fs_usage_for_user,
     get_accessible_project,
     get_attachment_if_accessible,
@@ -60,6 +62,7 @@ from db import (
     stats,
     unshare_fs_folder,
     update_user_profile,
+    update_user_by_admin,
     update_project,
     update_task_if_accessible,
     update_task_status_if_accessible,
@@ -1416,6 +1419,39 @@ def account_submit(
     return redirect('/account?error=profile_saved')
 
 
+@app.post('/account/delete')
+def account_delete_submit(
+    request: Request,
+    current_password: str = Form(...),
+    csrf: str = Form(...),
+):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    if not validate_csrf(request, csrf):
+        return redirect('/account?error=csrf')
+
+    if not verify_password(current_password.strip(), user['password_hash']):
+        return redirect('/account?error=current_password_invalid')
+
+    replacement_user_id = find_reassignment_user(exclude_user_id=int(user['id']))
+    if replacement_user_id is None:
+        return redirect('/account?error=cannot_delete_last_user')
+
+    result = delete_user_with_reassignment(
+        user_id=int(user['id']),
+        reassignment_user_id=replacement_user_id,
+    )
+    if result == 'last_admin':
+        return redirect('/account?error=cannot_delete_last_admin')
+    if result != 'ok':
+        return redirect('/account?error=delete_failed')
+
+    request.session.clear()
+    return redirect('/login')
+
+
 @app.get('/users', response_class=HTMLResponse)
 def users_page(request: Request):
     user, response = require_admin(request)
@@ -1428,6 +1464,7 @@ def users_page(request: Request):
         {
             'user': user,
             'users': list_users(),
+            'current_user_id': int(user['id']),
             'csrf_token': csrf_token(request),
             'error': request.query_params.get('error'),
         },
@@ -1473,6 +1510,103 @@ def create_user_submit(
 
     print(f"[info] User created by {admin_user['username']}: {username} ({role})")
     return redirect('/users')
+
+
+@app.post('/users/{target_user_id}/edit')
+def edit_user_submit(
+    request: Request,
+    target_user_id: int,
+    username: str = Form(...),
+    role: str = Form(default='user'),
+    email: str = Form(default=''),
+    mail_opt_in: str = Form(default='0'),
+    new_password: str = Form(default=''),
+    csrf: str = Form(...),
+):
+    admin_user, response = require_admin(request)
+    if response:
+        return response
+
+    if not validate_csrf(request, csrf):
+        return redirect('/users?error=csrf')
+
+    username = username.strip()
+    if not username:
+        return redirect('/users?error=missing_fields')
+    if role not in VALID_ROLES:
+        return redirect('/users?error=invalid_role')
+
+    pw = new_password.strip()
+    new_hash: str | None = None
+    if pw:
+        if len(pw) < MIN_PASSWORD_LENGTH:
+            return redirect('/users?error=password_too_short')
+        new_hash = hash_password(pw)
+
+    result = update_user_by_admin(
+        user_id=target_user_id,
+        username=username,
+        role=role,
+        email=email.strip(),
+        mail_opt_in=mail_opt_in == '1',
+        new_password_hash=new_hash,
+    )
+    if result == 'not_found':
+        return redirect('/users?error=user_not_found')
+    if result == 'last_admin':
+        return redirect('/users?error=last_admin')
+    if result == 'username_taken':
+        return redirect('/users?error=user_exists')
+
+    print(f"[info] User edited by {admin_user['username']}: {username} ({role})")
+    return redirect('/users?error=user_updated')
+
+
+@app.post('/users/{target_user_id}/delete')
+def delete_user_submit(
+    request: Request,
+    target_user_id: int,
+    csrf: str = Form(...),
+):
+    actor, response = require_login(request)
+    if response:
+        return response
+
+    if not validate_csrf(request, csrf):
+        return redirect('/users?error=csrf' if actor['role'] == 'admin' else '/account?error=csrf')
+
+    actor_id = int(actor['id'])
+    is_admin = actor['role'] == 'admin'
+    if not is_admin and actor_id != target_user_id:
+        return HTMLResponse('Forbidden', status_code=403)
+
+    replacement = find_reassignment_user(
+        exclude_user_id=target_user_id,
+        preferred_user_id=actor_id if actor_id != target_user_id else None,
+    )
+    if replacement is None:
+        if is_admin:
+            return redirect('/users?error=cannot_delete_last_user')
+        return redirect('/account?error=cannot_delete_last_user')
+
+    result = delete_user_with_reassignment(
+        user_id=target_user_id,
+        reassignment_user_id=replacement,
+    )
+    if result == 'last_admin':
+        if is_admin:
+            return redirect('/users?error=last_admin')
+        return redirect('/account?error=cannot_delete_last_admin')
+    if result != 'ok':
+        if is_admin:
+            return redirect('/users?error=delete_failed')
+        return redirect('/account?error=delete_failed')
+
+    if actor_id == target_user_id:
+        request.session.clear()
+        return redirect('/login')
+
+    return redirect('/users?error=user_deleted')
 
 
 if __name__ == '__main__':
