@@ -7,6 +7,7 @@ Lokales Home-Assistant-Add-on zur Protokollierung von Home-Assistant-Ausfallzeit
 - Heartbeat alle `heartbeat_interval_seconds` Sekunden
 - Ausfall-Erkennung beim Add-on-Start anhand der letzten Heartbeat-Lücke
 - Persistente SQLite-Speicherung unter `/data`
+- Web-Dashboard auf Port `8098`
 - MQTT Discovery für Home-Assistant-Sensoren
 - Optionales Ping-Monitoring für Router und Internet-Host
 - Robuster Start bei beschädigter Datenbank: die alte DB wird als `.corrupt-<timestamp>` gesichert
@@ -21,6 +22,34 @@ Lokales Home-Assistant-Add-on zur Protokollierung von Home-Assistant-Ausfallzeit
 5. `Start beim Booten` aktivieren.
 
 Der Mosquitto Broker muss laufen. Wenn MQTT-Benutzer/Passwort im Broker eingerichtet sind, dieselben Zugangsdaten in der Add-on-Konfiguration hinterlegen.
+
+## Web-Dashboard
+
+Das Add-on stellt eine grafische Auswertung auf Port `8098` bereit. In Home Assistant kann die Oberfläche über den Button `Weboberfläche öffnen` im Add-on geöffnet werden.
+
+Direkter Aufruf im lokalen Netz:
+
+```text
+http://homeassistant.local:8098
+```
+
+Das Dashboard zeigt:
+
+- Ausfallzeit heute, 7 Tage und letzter Ausfall
+- Add-on-Uptime
+- Tagesdiagramm der letzten 30 Tage
+- Router-/Internet-Status
+- Router-/Internet-Ausfallzeit der letzten 7 Tage
+- Tabelle der letzten Ereignisse
+
+Die JSON-Endpunkte sind:
+
+```text
+/api/summary
+/api/daily?days=30
+/api/events?limit=60
+/api/health
+```
 
 ## Konfiguration
 

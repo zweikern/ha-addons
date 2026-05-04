@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from web import WEB_PORT, WebDashboard
+
 try:
     import paho.mqtt.client as mqtt
 except Exception:  # pragma: no cover - handled at runtime in the add-on image.
@@ -22,7 +24,7 @@ except Exception:  # pragma: no cover - handled at runtime in the add-on image.
 
 
 APP_NAME = "HA Uptime & Outage Monitor"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.2"
 DEVICE_ID = "ha_uptime_outage_monitor"
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 OPTIONS_PATH = DATA_DIR / "options.json"
@@ -426,6 +428,78 @@ class EventStore:
             "updated_at": to_iso(now),
         }
 
+    def calculate_daily_rollups(
+        self, days: int = 30, now: datetime | None = None
+    ) -> list[dict[str, Any]]:
+        now = now or utc_now()
+        days = max(1, min(90, int(days)))
+        first_day = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+            days=days - 1
+        )
+        rollups = []
+        for offset in range(days):
+            start = first_day + timedelta(days=offset)
+            end = min(start + timedelta(days=1), now)
+            rollups.append(
+                {
+                    "date": start.date().isoformat(),
+                    "downtime_minutes": round_minutes(
+                        self._sum_overlap_seconds("outage", start, end)
+                    ),
+                    "outage_count": self._count_events_started("outage", start, end),
+                    "internet_outage_minutes": round_minutes(
+                        self._sum_overlap_seconds("internet_down", start, end)
+                    ),
+                    "router_outage_minutes": round_minutes(
+                        self._sum_overlap_seconds("router_down", start, end)
+                    ),
+                }
+            )
+        return rollups
+
+    def list_recent_events(self, limit: int = 60) -> list[dict[str, Any]]:
+        limit = max(1, min(250, int(limit)))
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT id, type, start_ts, end_ts, duration_seconds, metadata_json
+                FROM events
+                WHERE type != 'heartbeat'
+                ORDER BY start_ts DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        now = utc_now()
+        events = []
+        for row in rows:
+            duration_seconds = row["duration_seconds"]
+            start = from_iso(row["start_ts"])
+            if duration_seconds is None and start:
+                end = from_iso(row["end_ts"]) or now
+                duration_seconds = int(max(0.0, (end - start).total_seconds()))
+            events.append(
+                {
+                    "id": int(row["id"]),
+                    "type": row["type"],
+                    "start_ts": row["start_ts"],
+                    "end_ts": row["end_ts"],
+                    "duration_seconds": duration_seconds,
+                    "metadata": self._decode_metadata(row["metadata_json"]),
+                }
+            )
+        return events
+
+    def _decode_metadata(self, metadata_json: str | None) -> dict[str, Any]:
+        if not metadata_json:
+            return {}
+        try:
+            metadata = json.loads(metadata_json)
+        except json.JSONDecodeError:
+            return {}
+        return metadata if isinstance(metadata, dict) else {}
+
     def _last_event(self, event_type: str) -> sqlite3.Row | None:
         with self.lock:
             return self.connection.execute(
@@ -485,16 +559,22 @@ class NetworkMonitor:
     def __init__(self, store: EventStore, options: Options) -> None:
         self.store = store
         self.options = options
+        self.lock = threading.Lock()
         self.status: dict[str, bool | None] = {"internet": None, "router": None}
 
     def check_all(self, timestamp: datetime) -> dict[str, bool | None]:
         if not self.options.enable_ping_monitoring:
-            return self.status
-        self.status["router"] = self._check_host("router", self.options.router_host, timestamp)
-        self.status["internet"] = self._check_host(
-            "internet", self.options.internet_host, timestamp
-        )
-        return self.status
+            return self.snapshot()
+        router = self._check_host("router", self.options.router_host, timestamp)
+        internet = self._check_host("internet", self.options.internet_host, timestamp)
+        with self.lock:
+            self.status["router"] = router
+            self.status["internet"] = internet
+            return self.status.copy()
+
+    def snapshot(self) -> dict[str, bool | None]:
+        with self.lock:
+            return self.status.copy()
 
     def _check_host(self, kind: str, host: str, timestamp: datetime) -> bool | None:
         if not host:
@@ -766,8 +846,20 @@ def main() -> int:
     publisher = MqttPublisher(options)
     network_monitor = NetworkMonitor(store, options)
     process_start = utc_now()
+    web_dashboard: WebDashboard | None = None
 
     try:
+        try:
+            web_dashboard = WebDashboard(
+                store=store,
+                metrics_provider=lambda: store.calculate_metrics(utc_now(), process_start),
+                connectivity_provider=network_monitor.snapshot,
+                port=WEB_PORT,
+            )
+            web_dashboard.start()
+        except OSError as exc:
+            logging.warning("Web dashboard is disabled: %s", exc)
+
         detect_start_event(store, options, process_start)
         publisher.publish_discovery(options.enable_ping_monitoring)
         run_cycle(store, publisher, network_monitor, options, process_start)
@@ -780,6 +872,8 @@ def main() -> int:
             store.record_heartbeat(shutdown_at)
             logging.info("Final heartbeat stored")
         finally:
+            if web_dashboard:
+                web_dashboard.stop()
             publisher.stop()
             store.close()
 
