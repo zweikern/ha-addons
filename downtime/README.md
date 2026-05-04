@@ -9,6 +9,7 @@ Lokales Home-Assistant-Add-on zur Protokollierung von Home-Assistant-Ausfallzeit
 - Persistente SQLite-Speicherung unter `/data`
 - Web-Dashboard auf Port `8098`
 - MQTT Discovery für Home-Assistant-Sensoren
+- Home-Assistant-Core-Monitoring über den Supervisor-API-Proxy
 - Optionales Ping-Monitoring für Router und Internet-Host
 - Robuster Start bei beschädigter Datenbank: die alte DB wird als `.corrupt-<timestamp>` gesichert
 - Graceful shutdown mit finalem Heartbeat
@@ -35,11 +36,14 @@ http://homeassistant.local:8098
 
 Das Dashboard zeigt:
 
-- Ausfallzeit heute, 7 Tage und letzter Ausfall
+- System-/Stromausfall-Lücken anhand fehlender Heartbeats
+- Home-Assistant-Core-Ausfälle
+- Internet- und Router-Unterbrechungen
+- Add-on-Starts/Reboots
 - Add-on-Uptime
-- Tagesdiagramm der letzten 30 Tage
+- Tagesdiagramm der letzten 30 Tage nach Kategorien
 - Router-/Internet-Status
-- Router-/Internet-Ausfallzeit der letzten 7 Tage
+- Home-Assistant-Core-, Router- und Internet-Status
 - Tabelle der letzten Ereignisse
 
 Die JSON-Endpunkte sind:
@@ -65,6 +69,10 @@ mqtt_password: ""
 router_host: 192.168.178.1
 internet_host: 1.1.1.1
 enable_ping_monitoring: true
+enable_homeassistant_monitoring: true
+homeassistant_check_interval_seconds: 30
+homeassistant_failure_threshold_seconds: 90
+homeassistant_startup_grace_seconds: 300
 ```
 
 Ein Systemausfall wird erkannt, wenn beim Start gilt:
@@ -74,6 +82,21 @@ jetzt - letzter_heartbeat > heartbeat_interval_seconds + outage_threshold_second
 ```
 
 Die eigentliche Ausfalldauer wird ab dem erwarteten nächsten Heartbeat berechnet.
+
+Home-Assistant-Core-Monitoring:
+
+- Das Add-on prüft regelmäßig `http://supervisor/core/api/`.
+- Dafür ist in `config.yaml` `homeassistant_api: true` gesetzt.
+- Ein Core-Ausfall wird erst nach `homeassistant_failure_threshold_seconds` als `homeassistant_down` gespeichert.
+- Während der ersten `homeassistant_startup_grace_seconds` nach Add-on-Start werden fehlgeschlagene Core-Prüfungen nicht als Ausfall gewertet, damit normale Bootphasen nicht als Crash erscheinen.
+
+Gemessene Kategorien:
+
+- `outage`: Host-/Add-on-Heartbeat-Lücke, typisch bei Stromausfall, HA-OS-Reboot oder gestopptem Add-on
+- `homeassistant_down` / `homeassistant_up`: Home Assistant Core per API nicht erreichbar / wieder erreichbar
+- `internet_down` / `internet_up`: konfigurierter Internet-Host nicht pingbar / wieder erreichbar
+- `router_down` / `router_up`: konfigurierter Router nicht pingbar / wieder erreichbar
+- `addon_start`: Add-on-Start oder Container-Neustart
 
 ## MQTT-Entities
 
@@ -87,10 +110,14 @@ Per MQTT Discovery erscheinen unter anderem diese Entities:
 - `sensor.ha_outage_count_30d`
 - `sensor.ha_outage_last_duration`
 - `sensor.ha_outage_addon_uptime`
+- `sensor.ha_outage_homeassistant_outage_7d`
+- `sensor.ha_outage_homeassistant_count_7d`
+- `sensor.ha_outage_addon_restart_count_7d`
+- `binary_sensor.ha_outage_homeassistant_core_online`
 - `binary_sensor.ha_outage_internet_online`
 - `binary_sensor.ha_outage_router_online`
 
-Zusätzlich werden `sensor.ha_outage_last_start`, `sensor.ha_outage_last_end`, `sensor.ha_outage_internet_outage_7d` und `sensor.ha_outage_router_outage_7d` veröffentlicht.
+Zusätzlich werden `sensor.ha_outage_last_start`, `sensor.ha_outage_last_end`, `sensor.ha_outage_homeassistant_outage_30d`, `sensor.ha_outage_internet_outage_7d` und `sensor.ha_outage_router_outage_7d` veröffentlicht.
 
 Hinweis: Zeitstempel werden in UTC gespeichert. Die Kennzahl `today` wird ebenfalls ab 00:00 UTC berechnet.
 
@@ -104,6 +131,10 @@ entities:
     name: Ausfallzeit 7 Tage
   - entity: sensor.ha_outage_count_7d
     name: Ausfälle 7 Tage
+  - entity: sensor.ha_outage_homeassistant_outage_7d
+    name: Home Assistant Core Ausfallzeit 7 Tage
+  - entity: binary_sensor.ha_outage_homeassistant_core_online
+    name: Home Assistant Core
   - entity: sensor.ha_outage_last_duration
     name: Letzter Ausfall
   - entity: sensor.ha_outage_addon_uptime
@@ -149,7 +180,7 @@ SQLite-Datei:
 
 Tabelle `events`:
 
-- `type`: `heartbeat`, `addon_start`, `outage`, `internet_down`, `internet_up`, `router_down`, `router_up`
+- `type`: `heartbeat`, `addon_start`, `outage`, `homeassistant_down`, `homeassistant_up`, `internet_down`, `internet_up`, `router_down`, `router_up`
 - `start_ts`: UTC-Startzeit
 - `end_ts`: UTC-Endzeit, falls abgeschlossen
 - `duration_seconds`: Dauer, falls berechnet
@@ -157,4 +188,4 @@ Tabelle `events`:
 
 ## Grenzen
 
-Das Add-on misst Add-on-/Host-Lücken anhand eigener Heartbeats. Wenn nur Home Assistant Core neu startet, der Add-on-Container aber weiterläuft, entsteht kein Systemausfall-Event. Internet- und Router-Ausfälle werden separat behandelt und zählen nicht als Home-Assistant-Ausfallzeit.
+Das Add-on kann eine Host-/Heartbeat-Lücke nicht sicher nach Ursache unterscheiden. Ein `outage` kann ein Stromausfall, ein HA-OS-Reboot, ein Container-Neustart oder ein manuell gestopptes Add-on sein. Home-Assistant-Core-, Internet- und Router-Ausfälle werden separat behandelt und zählen nicht als System-/Stromausfallzeit.

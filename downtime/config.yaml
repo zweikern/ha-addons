@@ -1,6 +1,6 @@
 name: "HA Uptime & Outage Monitor"
 slug: "ha_uptime_outage_monitor"
-version: "0.1.2"
+version: "0.1.3"
 description: "Local heartbeat, restart and connectivity downtime monitor for Home Assistant."
 url: "https://developers.home-assistant.io/docs/add-ons/"
 arch:
@@ -10,6 +10,7 @@ arch:
 startup: services
 boot: auto
 init: false
+homeassistant_api: true
 webui: "http://[HOST]:[PORT:8098]"
 ports:
   8098/tcp: 8098
@@ -25,6 +26,10 @@ options:
   router_host: "192.168.178.1"
   internet_host: "1.1.1.1"
   enable_ping_monitoring: true
+  enable_homeassistant_monitoring: true
+  homeassistant_check_interval_seconds: 30
+  homeassistant_failure_threshold_seconds: 90
+  homeassistant_startup_grace_seconds: 300
 schema:
   heartbeat_interval_seconds: "int(10,3600)"
   outage_threshold_seconds: "int(0,86400)"
@@ -35,3 +40,7 @@ schema:
   router_host: "str"
   internet_host: "str"
   enable_ping_monitoring: "bool"
+  enable_homeassistant_monitoring: "bool"
+  homeassistant_check_interval_seconds: "int(10,3600)"
+  homeassistant_failure_threshold_seconds: "int(0,86400)"
+  homeassistant_startup_grace_seconds: "int(0,3600)"

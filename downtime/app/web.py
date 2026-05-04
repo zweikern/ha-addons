@@ -124,6 +124,7 @@ def clamp_query_int(
 
 def format_connectivity(status: dict[str, bool | None]) -> dict[str, str]:
     return {
+        "homeassistant_core": state_label(status.get("homeassistant_core")),
         "internet": state_label(status.get("internet")),
         "router": state_label(status.get("router")),
     }
@@ -240,7 +241,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     }
 
     .metrics {
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
     }
 
     .charts {
@@ -404,11 +405,13 @@ DASHBOARD_HTML = r"""<!doctype html>
     }
 
     .event-type.outage,
+    .event-type.homeassistant_down,
     .event-type.internet_down,
     .event-type.router_down {
       color: var(--danger);
     }
 
+    .event-type.homeassistant_up,
     .event-type.internet_up,
     .event-type.router_up {
       color: var(--ok);
@@ -470,31 +473,38 @@ DASHBOARD_HTML = r"""<!doctype html>
   <main class="shell">
     <section class="grid metrics" aria-label="Kennzahlen">
       <article class="card metric">
-        <div class="metric-label">Ausfallzeit heute</div>
-        <div>
-          <div class="metric-value"><span id="downtimeToday">0</span> <span class="metric-unit">min</span></div>
-          <div class="metric-sub">UTC-Tagesfenster</div>
-        </div>
-      </article>
-      <article class="card metric">
-        <div class="metric-label">Ausfallzeit 7 Tage</div>
+        <div class="metric-label">System / Strom</div>
         <div>
           <div class="metric-value"><span id="downtime7d">0</span> <span class="metric-unit">min</span></div>
-          <div class="metric-sub"><span id="outages7d">0</span> Ausfälle</div>
+          <div class="metric-sub"><span id="outages7d">0</span> Lücken in 7 Tagen</div>
         </div>
       </article>
       <article class="card metric">
-        <div class="metric-label">Letzter Ausfall</div>
+        <div class="metric-label">Home Assistant Core</div>
         <div>
-          <div class="metric-value"><span id="lastDuration">0</span> <span class="metric-unit">min</span></div>
-          <div class="metric-sub" id="lastWindow">keine Daten</div>
+          <div class="metric-value"><span id="haCoreOutage7d">0</span> <span class="metric-unit">min</span></div>
+          <div class="metric-sub"><span id="haCoreOutageCount7d">0</span> Ausfälle in 7 Tagen</div>
         </div>
       </article>
       <article class="card metric">
-        <div class="metric-label">Add-on Uptime</div>
+        <div class="metric-label">Internet</div>
         <div>
-          <div class="metric-value"><span id="addonUptime">0</span></div>
-          <div class="metric-sub">laufender Container</div>
+          <div class="metric-value"><span id="internetOutage7d">0</span> <span class="metric-unit">min</span></div>
+          <div class="metric-sub">getrennt vom Systemausfall</div>
+        </div>
+      </article>
+      <article class="card metric">
+        <div class="metric-label">Router</div>
+        <div>
+          <div class="metric-value"><span id="routerOutage7d">0</span> <span class="metric-unit">min</span></div>
+          <div class="metric-sub">lokale Erreichbarkeit</div>
+        </div>
+      </article>
+      <article class="card metric">
+        <div class="metric-label">Starts / Reboots</div>
+        <div>
+          <div class="metric-value"><span id="addonStarts7d">0</span></div>
+          <div class="metric-sub">Add-on-Starts in 7 Tagen</div>
         </div>
       </article>
     </section>
@@ -517,6 +527,10 @@ DASHBOARD_HTML = r"""<!doctype html>
           </div>
           <div class="panel-body status-list">
             <div class="status-row">
+              <strong>Home Assistant Core</strong>
+              <span class="pill unknown" id="haCoreStatus">unknown</span>
+            </div>
+            <div class="status-row">
               <strong>Internet</strong>
               <span class="pill unknown" id="internetStatus">unknown</span>
             </div>
@@ -524,15 +538,23 @@ DASHBOARD_HTML = r"""<!doctype html>
               <strong>Router</strong>
               <span class="pill unknown" id="routerStatus">unknown</span>
             </div>
+            <div class="status-row">
+              <strong>Add-on Uptime</strong>
+              <span id="addonUptime">0 s</span>
+            </div>
+            <div class="status-row">
+              <strong>Letzter Systemausfall</strong>
+              <span id="lastWindow">keine Daten</span>
+            </div>
           </div>
         </article>
 
         <article class="card">
           <div class="panel-head">
-            <div class="section-title">Netz-Ausfälle 7 Tage</div>
+            <div class="section-title">Ausfälle 7 Tage</div>
           </div>
           <div class="panel-body">
-            <canvas id="networkChart" width="420" height="260" aria-label="Netz-Ausfälle 7 Tage"></canvas>
+            <canvas id="networkChart" width="420" height="300" aria-label="Ausfälle 7 Tage"></canvas>
           </div>
         </article>
       </div>
@@ -564,12 +586,16 @@ DASHBOARD_HTML = r"""<!doctype html>
   <script>
     const els = {
       updatedAt: document.getElementById('updatedAt'),
-      downtimeToday: document.getElementById('downtimeToday'),
       downtime7d: document.getElementById('downtime7d'),
       outages7d: document.getElementById('outages7d'),
-      lastDuration: document.getElementById('lastDuration'),
+      haCoreOutage7d: document.getElementById('haCoreOutage7d'),
+      haCoreOutageCount7d: document.getElementById('haCoreOutageCount7d'),
+      internetOutage7d: document.getElementById('internetOutage7d'),
+      routerOutage7d: document.getElementById('routerOutage7d'),
+      addonStarts7d: document.getElementById('addonStarts7d'),
       lastWindow: document.getElementById('lastWindow'),
       addonUptime: document.getElementById('addonUptime'),
+      haCoreStatus: document.getElementById('haCoreStatus'),
       internetStatus: document.getElementById('internetStatus'),
       routerStatus: document.getElementById('routerStatus'),
       eventsBody: document.getElementById('eventsBody')
@@ -611,12 +637,16 @@ DASHBOARD_HTML = r"""<!doctype html>
       const metrics = summary.metrics || {};
       const connectivity = summary.connectivity || {};
       els.updatedAt.textContent = `Zuletzt aktualisiert: ${formatDateTime(metrics.updated_at || summary.server_time)}`;
-      els.downtimeToday.textContent = number(metrics.downtime_today_minutes);
       els.downtime7d.textContent = number(metrics.downtime_7d_minutes);
       els.outages7d.textContent = number(metrics.outage_count_7d, 0);
-      els.lastDuration.textContent = number(metrics.last_outage_duration_minutes);
+      els.haCoreOutage7d.textContent = number(metrics.homeassistant_outage_7d_minutes);
+      els.haCoreOutageCount7d.textContent = number(metrics.homeassistant_outage_count_7d, 0);
+      els.internetOutage7d.textContent = number(metrics.internet_outage_7d_minutes);
+      els.routerOutage7d.textContent = number(metrics.router_outage_7d_minutes);
+      els.addonStarts7d.textContent = number(metrics.addon_restart_count_7d, 0);
       els.lastWindow.textContent = formatWindow(metrics.last_outage_start, metrics.last_outage_end);
       els.addonUptime.textContent = formatDuration(metrics.addon_uptime_seconds || 0);
+      setPill(els.haCoreStatus, connectivity.homeassistant_core);
       setPill(els.internetStatus, connectivity.internet);
       setPill(els.routerStatus, connectivity.router);
     }
@@ -636,20 +666,38 @@ DASHBOARD_HTML = r"""<!doctype html>
       clear(ctx, width, height);
       drawAxes(ctx, width, height, padding);
 
-      const values = days.map(day => Number(day.downtime_minutes || 0));
-      const maxValue = Math.max(1, ...values);
+      const series = [
+        {key: 'downtime_minutes', label: 'System', color: '#bc3b32'},
+        {key: 'homeassistant_outage_minutes', label: 'HA Core', color: '#007f7a'},
+        {key: 'internet_outage_minutes', label: 'Internet', color: '#b36b00'},
+        {key: 'router_outage_minutes', label: 'Router', color: '#2f6fad'}
+      ];
+      const totals = days.map(day => series.reduce((sum, item) => sum + Number(day[item.key] || 0), 0));
+      const maxValue = Math.max(1, ...totals);
       const plotWidth = width - padding.left - padding.right;
       const plotHeight = height - padding.top - padding.bottom;
       const gap = 3;
       const barWidth = Math.max(4, (plotWidth / Math.max(1, days.length)) - gap);
 
       days.forEach((day, index) => {
-        const value = Number(day.downtime_minutes || 0);
         const x = padding.left + index * (plotWidth / days.length) + gap / 2;
-        const barHeight = Math.max(value > 0 ? 3 : 0, (value / maxValue) * plotHeight);
-        const y = padding.top + plotHeight - barHeight;
-        ctx.fillStyle = value > 0 ? '#bc3b32' : '#dce3eb';
-        ctx.fillRect(x, y, barWidth, barHeight);
+        let yBase = padding.top + plotHeight;
+        let hasValue = false;
+        series.forEach(item => {
+          const value = Number(day[item.key] || 0);
+          if (value <= 0) {
+            return;
+          }
+          hasValue = true;
+          const barHeight = Math.max(3, (value / maxValue) * plotHeight);
+          yBase -= barHeight;
+          ctx.fillStyle = item.color;
+          ctx.fillRect(x, yBase, barWidth, barHeight);
+        });
+        if (!hasValue) {
+          ctx.fillStyle = '#dce3eb';
+          ctx.fillRect(x, padding.top + plotHeight - 1, barWidth, 1);
+        }
       });
 
       ctx.fillStyle = '#627083';
@@ -659,6 +707,16 @@ DASHBOARD_HTML = r"""<!doctype html>
       ctx.fillText(labelDay(days[0]), padding.left, height - 14);
       ctx.textAlign = 'right';
       ctx.fillText(labelDay(days[days.length - 1]), width - padding.right, height - 14);
+
+      let legendX = padding.left;
+      series.forEach(item => {
+        ctx.fillStyle = item.color;
+        ctx.fillRect(legendX, 8, 10, 10);
+        ctx.fillStyle = '#627083';
+        ctx.textAlign = 'left';
+        ctx.fillText(item.label, legendX + 14, 17);
+        legendX += 84;
+      });
     }
 
     function drawNetworkChart(canvas, metrics) {
@@ -667,13 +725,15 @@ DASHBOARD_HTML = r"""<!doctype html>
       const height = canvas.clientHeight;
       clear(ctx, width, height);
       const data = [
+        {label: 'System', value: Number(metrics.downtime_7d_minutes || 0), color: '#bc3b32'},
+        {label: 'HA Core', value: Number(metrics.homeassistant_outage_7d_minutes || 0), color: '#007f7a'},
         {label: 'Internet', value: Number(metrics.internet_outage_7d_minutes || 0), color: '#b36b00'},
-        {label: 'Router', value: Number(metrics.router_outage_7d_minutes || 0), color: '#007f7a'}
+        {label: 'Router', value: Number(metrics.router_outage_7d_minutes || 0), color: '#2f6fad'}
       ];
       const maxValue = Math.max(1, ...data.map(item => item.value));
       const barArea = width - 118;
       data.forEach((item, index) => {
-        const y = 52 + index * 72;
+        const y = 34 + index * 52;
         const barWidth = Math.max(item.value > 0 ? 3 : 0, (item.value / maxValue) * barArea);
         ctx.fillStyle = '#edf1f5';
         ctx.fillRect(90, y, barArea, 24);
@@ -728,13 +788,27 @@ DASHBOARD_HTML = r"""<!doctype html>
       }
       els.eventsBody.innerHTML = events.map(event => `
         <tr>
-          <td><span class="event-type ${escapeHtml(event.type)}">${escapeHtml(event.type)}</span></td>
+          <td><span class="event-type ${escapeHtml(event.type)}">${escapeHtml(eventLabel(event.type))}</span></td>
           <td>${formatDateTime(event.start_ts)}</td>
           <td>${formatDateTime(event.end_ts)}</td>
           <td>${formatDuration(event.duration_seconds)}</td>
           <td>${formatMetadata(event.metadata)}</td>
         </tr>
       `).join('');
+    }
+
+    function eventLabel(type) {
+      const labels = {
+        outage: 'System-/Stromausfall',
+        addon_start: 'Add-on Start/Reboot',
+        internet_down: 'Internet unterbrochen',
+        internet_up: 'Internet wieder online',
+        router_down: 'Router unterbrochen',
+        router_up: 'Router wieder online',
+        homeassistant_down: 'Home Assistant Core offline',
+        homeassistant_up: 'Home Assistant Core online'
+      };
+      return labels[type] || type;
     }
 
     function formatMetadata(metadata) {

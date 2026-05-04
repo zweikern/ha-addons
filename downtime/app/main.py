@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from web import WEB_PORT, WebDashboard
 
@@ -24,7 +26,7 @@ except Exception:  # pragma: no cover - handled at runtime in the add-on image.
 
 
 APP_NAME = "HA Uptime & Outage Monitor"
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.1.3"
 DEVICE_ID = "ha_uptime_outage_monitor"
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 OPTIONS_PATH = DATA_DIR / "options.json"
@@ -46,6 +48,10 @@ DEFAULT_OPTIONS: dict[str, Any] = {
     "router_host": "192.168.178.1",
     "internet_host": "1.1.1.1",
     "enable_ping_monitoring": True,
+    "enable_homeassistant_monitoring": True,
+    "homeassistant_check_interval_seconds": 30,
+    "homeassistant_failure_threshold_seconds": 90,
+    "homeassistant_startup_grace_seconds": 300,
 }
 
 
@@ -141,6 +147,36 @@ SENSOR_DEFINITIONS = [
         "unit": "min",
         "icon": "mdi:router-network",
     },
+    {
+        "key": "homeassistant_outage_7d",
+        "object_id": "ha_outage_homeassistant_outage_7d",
+        "name": "Home Assistant Outage 7 Days",
+        "field": "homeassistant_outage_7d_minutes",
+        "unit": "min",
+        "icon": "mdi:home-assistant",
+    },
+    {
+        "key": "homeassistant_outage_30d",
+        "object_id": "ha_outage_homeassistant_outage_30d",
+        "name": "Home Assistant Outage 30 Days",
+        "field": "homeassistant_outage_30d_minutes",
+        "unit": "min",
+        "icon": "mdi:home-assistant",
+    },
+    {
+        "key": "homeassistant_outage_count_7d",
+        "object_id": "ha_outage_homeassistant_count_7d",
+        "name": "Home Assistant Outage Count 7 Days",
+        "field": "homeassistant_outage_count_7d",
+        "icon": "mdi:counter",
+    },
+    {
+        "key": "addon_restart_count_7d",
+        "object_id": "ha_outage_addon_restart_count_7d",
+        "name": "Add-on Start Count 7 Days",
+        "field": "addon_restart_count_7d",
+        "icon": "mdi:restart",
+    },
 ]
 
 
@@ -156,6 +192,12 @@ BINARY_SENSOR_DEFINITIONS = [
         "object_id": "ha_outage_router_online",
         "name": "Router Online",
         "field": "router_online",
+    },
+    {
+        "key": "homeassistant_core_online",
+        "object_id": "ha_outage_homeassistant_core_online",
+        "name": "Home Assistant Core Online",
+        "field": "homeassistant_core_online",
     },
 ]
 
@@ -205,6 +247,10 @@ class Options:
     router_host: str
     internet_host: str
     enable_ping_monitoring: bool
+    enable_homeassistant_monitoring: bool
+    homeassistant_check_interval_seconds: int
+    homeassistant_failure_threshold_seconds: int
+    homeassistant_startup_grace_seconds: int
 
 
 def load_options() -> Options:
@@ -236,6 +282,18 @@ def load_options() -> Options:
         router_host=str(raw.get("router_host", "")).strip(),
         internet_host=str(raw.get("internet_host", "")).strip(),
         enable_ping_monitoring=bool(raw.get("enable_ping_monitoring", True)),
+        enable_homeassistant_monitoring=bool(
+            raw.get("enable_homeassistant_monitoring", True)
+        ),
+        homeassistant_check_interval_seconds=clamp_int(
+            raw.get("homeassistant_check_interval_seconds"), 30, 10, 3600
+        ),
+        homeassistant_failure_threshold_seconds=clamp_int(
+            raw.get("homeassistant_failure_threshold_seconds"), 90, 0, 86400
+        ),
+        homeassistant_startup_grace_seconds=clamp_int(
+            raw.get("homeassistant_startup_grace_seconds"), 300, 0, 3600
+        ),
     )
 
 
@@ -400,6 +458,24 @@ class EventStore:
             if last_outage["duration_seconds"] is not None:
                 last_duration_seconds = int(last_outage["duration_seconds"])
 
+        last_homeassistant_outage = self._last_event("homeassistant_down")
+        last_homeassistant_start = "none"
+        last_homeassistant_end = "none"
+        last_homeassistant_duration_seconds = 0
+        if last_homeassistant_outage:
+            last_homeassistant_start = last_homeassistant_outage["start_ts"]
+            last_homeassistant_end = last_homeassistant_outage["end_ts"] or "none"
+            if last_homeassistant_outage["duration_seconds"] is not None:
+                last_homeassistant_duration_seconds = int(
+                    last_homeassistant_outage["duration_seconds"]
+                )
+            else:
+                start = from_iso(last_homeassistant_outage["start_ts"])
+                if start:
+                    last_homeassistant_duration_seconds = int(
+                        max(0.0, (now - start).total_seconds())
+                    )
+
         return {
             "downtime_today_minutes": round_minutes(
                 self._sum_overlap_seconds("outage", today_start, now)
@@ -424,6 +500,23 @@ class EventStore:
             ),
             "router_outage_7d_minutes": round_minutes(
                 self._sum_overlap_seconds("router_down", seven_days_start, now)
+            ),
+            "homeassistant_outage_7d_minutes": round_minutes(
+                self._sum_overlap_seconds("homeassistant_down", seven_days_start, now)
+            ),
+            "homeassistant_outage_30d_minutes": round_minutes(
+                self._sum_overlap_seconds("homeassistant_down", thirty_days_start, now)
+            ),
+            "homeassistant_outage_count_7d": self._count_events_started(
+                "homeassistant_down", seven_days_start, now
+            ),
+            "last_homeassistant_outage_start": last_homeassistant_start,
+            "last_homeassistant_outage_end": last_homeassistant_end,
+            "last_homeassistant_outage_duration_minutes": round_minutes(
+                last_homeassistant_duration_seconds
+            ),
+            "addon_restart_count_7d": self._count_events_started(
+                "addon_start", seven_days_start, now
             ),
             "updated_at": to_iso(now),
         }
@@ -452,6 +545,12 @@ class EventStore:
                     ),
                     "router_outage_minutes": round_minutes(
                         self._sum_overlap_seconds("router_down", start, end)
+                    ),
+                    "homeassistant_outage_minutes": round_minutes(
+                        self._sum_overlap_seconds("homeassistant_down", start, end)
+                    ),
+                    "addon_start_count": self._count_events_started(
+                        "addon_start", start, end
                     ),
                 }
             )
@@ -589,6 +688,117 @@ class NetworkMonitor:
         return online
 
 
+class HomeAssistantMonitor:
+    def __init__(
+        self,
+        store: EventStore,
+        options: Options,
+        process_start: datetime,
+    ) -> None:
+        self.store = store
+        self.options = options
+        self.process_start = process_start
+        self.lock = threading.Lock()
+        self.status: bool | None = None
+        self.pending_down_at: datetime | None = None
+        self.token_missing_logged = False
+        self.endpoint = os.environ.get(
+            "HOMEASSISTANT_API_URL",
+            "http://supervisor/core/api/",
+        )
+
+    def check(self, timestamp: datetime) -> bool:
+        if not self.options.enable_homeassistant_monitoring:
+            return False
+
+        online = self._api_available()
+        if online is None:
+            with self.lock:
+                self.status = None
+                self.pending_down_at = None
+            return False
+
+        changed = False
+        with self.lock:
+            previous_status = self.status
+            self.status = online
+
+        if online:
+            with self.lock:
+                self.pending_down_at = None
+            if self.store.mark_host_up("homeassistant", self.endpoint, timestamp):
+                logging.info("Home Assistant Core is reachable again")
+                changed = True
+            elif previous_status is not True:
+                logging.info("Home Assistant Core is reachable")
+                changed = True
+            return changed
+
+        if self._in_startup_grace(timestamp):
+            logging.debug("Home Assistant Core is not reachable during startup grace")
+            return previous_status is True
+
+        with self.lock:
+            if self.pending_down_at is None:
+                self.pending_down_at = timestamp
+                logging.warning("Home Assistant Core is not reachable")
+                if self.options.homeassistant_failure_threshold_seconds == 0:
+                    if self.store.mark_host_down(
+                        "homeassistant",
+                        self.endpoint,
+                        timestamp,
+                    ):
+                        logging.warning("Home Assistant Core outage detected")
+                        return True
+                return previous_status is True
+            down_since = self.pending_down_at
+
+        failure_seconds = (timestamp - down_since).total_seconds()
+        if failure_seconds >= self.options.homeassistant_failure_threshold_seconds:
+            if self.store.mark_host_down("homeassistant", self.endpoint, down_since):
+                logging.warning(
+                    "Home Assistant Core outage detected after %s seconds",
+                    int(failure_seconds),
+                )
+                changed = True
+        return changed
+
+    def snapshot(self) -> bool | None:
+        with self.lock:
+            return self.status
+
+    def _in_startup_grace(self, timestamp: datetime) -> bool:
+        grace_seconds = self.options.homeassistant_startup_grace_seconds
+        return (timestamp - self.process_start).total_seconds() < grace_seconds
+
+    def _api_available(self) -> bool | None:
+        token = os.environ.get("SUPERVISOR_TOKEN", "")
+        if not token:
+            if not self.token_missing_logged:
+                logging.warning(
+                    "SUPERVISOR_TOKEN is missing; Home Assistant Core monitoring is disabled"
+                )
+                self.token_missing_logged = True
+            return None
+
+        request = Request(
+            self.endpoint,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=5) as response:
+                return 200 <= response.status < 500
+        except HTTPError as exc:
+            return exc.code < 500
+        except (TimeoutError, URLError, OSError) as exc:
+            logging.debug("Home Assistant Core healthcheck failed: %s", exc)
+            return False
+
+
 def ping_host(host: str) -> bool:
     try:
         result = subprocess.run(
@@ -681,7 +891,12 @@ class MqttPublisher:
 
         for definition in BINARY_SENSOR_DEFINITIONS:
             topic = f"{DISCOVERY_PREFIX}/binary_sensor/{DEVICE_ID}/{definition['key']}/config"
-            if not ping_enabled:
+            sensor_enabled = True
+            if definition["key"] in {"internet_online", "router_online"}:
+                sensor_enabled = ping_enabled
+            if definition["key"] == "homeassistant_core_online":
+                sensor_enabled = self.options.enable_homeassistant_monitoring
+            if not sensor_enabled:
                 self._publish_raw(topic, "", retain=True)
                 continue
             payload = {
@@ -714,10 +929,13 @@ class MqttPublisher:
         state_payload = metrics.copy()
         self._publish_json(STATE_TOPIC, state_payload, retain=True)
 
-        if ping_enabled:
+        if ping_enabled or self.options.enable_homeassistant_monitoring:
             binary_payload = {
                 "internet_online": bool_to_mqtt_state(connectivity.get("internet")),
                 "router_online": bool_to_mqtt_state(connectivity.get("router")),
+                "homeassistant_core_online": bool_to_mqtt_state(
+                    connectivity.get("homeassistant_core")
+                ),
             }
             self._publish_json(BINARY_STATE_TOPIC, binary_payload, retain=True)
 
@@ -808,19 +1026,55 @@ def run_cycle(
     store: EventStore,
     publisher: MqttPublisher,
     network_monitor: NetworkMonitor,
+    homeassistant_monitor: HomeAssistantMonitor,
     options: Options,
     process_start: datetime,
 ) -> None:
     now = utc_now()
     store.record_heartbeat(now)
-    connectivity = network_monitor.check_all(now)
+    network_monitor.check_all(now)
+    publish_current_state(
+        store,
+        publisher,
+        network_monitor,
+        homeassistant_monitor,
+        options,
+        process_start,
+        now,
+    )
     metrics = store.calculate_metrics(now, process_start)
-    publisher.publish_state(metrics, connectivity, options.enable_ping_monitoring)
     logging.info(
         "Heartbeat stored; downtime 7d=%s min, outages 7d=%s",
         metrics["downtime_7d_minutes"],
         metrics["outage_count_7d"],
     )
+
+
+def publish_current_state(
+    store: EventStore,
+    publisher: MqttPublisher,
+    network_monitor: NetworkMonitor,
+    homeassistant_monitor: HomeAssistantMonitor,
+    options: Options,
+    process_start: datetime,
+    now: datetime | None = None,
+) -> None:
+    now = now or utc_now()
+    metrics = store.calculate_metrics(now, process_start)
+    publisher.publish_state(
+        metrics,
+        combined_connectivity(network_monitor, homeassistant_monitor),
+        options.enable_ping_monitoring,
+    )
+
+
+def combined_connectivity(
+    network_monitor: NetworkMonitor,
+    homeassistant_monitor: HomeAssistantMonitor,
+) -> dict[str, bool | None]:
+    connectivity = network_monitor.snapshot()
+    connectivity["homeassistant_core"] = homeassistant_monitor.snapshot()
+    return connectivity
 
 
 def main() -> int:
@@ -846,6 +1100,7 @@ def main() -> int:
     publisher = MqttPublisher(options)
     network_monitor = NetworkMonitor(store, options)
     process_start = utc_now()
+    homeassistant_monitor = HomeAssistantMonitor(store, options, process_start)
     web_dashboard: WebDashboard | None = None
 
     try:
@@ -853,7 +1108,10 @@ def main() -> int:
             web_dashboard = WebDashboard(
                 store=store,
                 metrics_provider=lambda: store.calculate_metrics(utc_now(), process_start),
-                connectivity_provider=network_monitor.snapshot,
+                connectivity_provider=lambda: combined_connectivity(
+                    network_monitor,
+                    homeassistant_monitor,
+                ),
                 port=WEB_PORT,
             )
             web_dashboard.start()
@@ -862,10 +1120,58 @@ def main() -> int:
 
         detect_start_event(store, options, process_start)
         publisher.publish_discovery(options.enable_ping_monitoring)
-        run_cycle(store, publisher, network_monitor, options, process_start)
+        if options.enable_homeassistant_monitoring:
+            homeassistant_monitor.check(process_start)
+        run_cycle(
+            store,
+            publisher,
+            network_monitor,
+            homeassistant_monitor,
+            options,
+            process_start,
+        )
 
-        while not stop_event.wait(options.heartbeat_interval_seconds):
-            run_cycle(store, publisher, network_monitor, options, process_start)
+        next_heartbeat_at = time.monotonic() + options.heartbeat_interval_seconds
+        next_homeassistant_check_at = (
+            time.monotonic() + options.homeassistant_check_interval_seconds
+        )
+
+        while not stop_event.is_set():
+            wake_times = [next_heartbeat_at]
+            if options.enable_homeassistant_monitoring:
+                wake_times.append(next_homeassistant_check_at)
+            wait_seconds = max(0.0, min(wake_times) - time.monotonic())
+            if wait_seconds > 0 and stop_event.wait(wait_seconds):
+                break
+
+            now_monotonic = time.monotonic()
+            if (
+                options.enable_homeassistant_monitoring
+                and now_monotonic >= next_homeassistant_check_at
+            ):
+                if homeassistant_monitor.check(utc_now()):
+                    publish_current_state(
+                        store,
+                        publisher,
+                        network_monitor,
+                        homeassistant_monitor,
+                        options,
+                        process_start,
+                    )
+                next_homeassistant_check_at = (
+                    now_monotonic + options.homeassistant_check_interval_seconds
+                )
+
+            if now_monotonic >= next_heartbeat_at:
+                run_cycle(
+                    store,
+                    publisher,
+                    network_monitor,
+                    homeassistant_monitor,
+                    options,
+                    process_start,
+                )
+                next_heartbeat_at = now_monotonic + options.heartbeat_interval_seconds
     finally:
         shutdown_at = utc_now()
         try:
