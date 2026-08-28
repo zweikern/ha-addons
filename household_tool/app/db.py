@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -123,6 +124,30 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_fs_folder_members_folder
                 ON fs_folder_members(folder_id);
+
+            CREATE TABLE IF NOT EXISTS music_tracks (
+                track_key TEXT PRIMARY KEY,
+                artist TEXT NOT NULL,
+                title TEXT NOT NULL,
+                album TEXT,
+                uri TEXT,
+                source TEXT,
+                analyzer_bpm REAL,
+                analyzer_confidence REAL,
+                researched_bpm REAL,
+                primary_genre TEXT,
+                subgenres_json TEXT NOT NULL DEFAULT '[]',
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                genre_confidence REAL,
+                evidence_json TEXT NOT NULL DEFAULT '[]',
+                favorite INTEGER NOT NULL DEFAULT 0,
+                favorited_at TEXT,
+                accepted_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_music_tracks_accepted_at
+                ON music_tracks(accepted_at DESC);
             '''
         )
 
@@ -141,6 +166,12 @@ def init_db() -> None:
 
         if not _has_column(conn, 'users', 'mail_opt_in'):
             conn.execute('ALTER TABLE users ADD COLUMN mail_opt_in INTEGER NOT NULL DEFAULT 0')
+
+        if not _has_column(conn, 'music_tracks', 'favorite'):
+            conn.execute('ALTER TABLE music_tracks ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0')
+
+        if not _has_column(conn, 'music_tracks', 'favorited_at'):
+            conn.execute('ALTER TABLE music_tracks ADD COLUMN favorited_at TEXT')
 
 
 def get_user_by_username(username: str) -> sqlite3.Row | None:
@@ -1359,3 +1390,59 @@ def stats() -> dict[str, Any]:
         'open_tasks': open_tasks,
         'files_total': files_total,
     }
+
+
+def upsert_music_track(payload: dict[str, Any]) -> None:
+    track = payload['track']
+    analyzer = payload.get('analyzer') or {}
+    research = payload.get('research') or {}
+    genres = research.get('genres') or {}
+    tempo = research.get('tempo') or {}
+    with get_connection() as conn:
+        conn.execute(
+            '''
+            INSERT INTO music_tracks (
+                track_key, artist, title, album, uri, source,
+                analyzer_bpm, analyzer_confidence, researched_bpm,
+                primary_genre, subgenres_json, tags_json, genre_confidence,
+                evidence_json, favorite, favorited_at, accepted_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(track_key) DO UPDATE SET
+                artist=excluded.artist,
+                title=excluded.title,
+                album=excluded.album,
+                uri=excluded.uri,
+                source=excluded.source,
+                analyzer_bpm=excluded.analyzer_bpm,
+                analyzer_confidence=excluded.analyzer_confidence,
+                researched_bpm=excluded.researched_bpm,
+                primary_genre=excluded.primary_genre,
+                subgenres_json=excluded.subgenres_json,
+                tags_json=excluded.tags_json,
+                genre_confidence=excluded.genre_confidence,
+                evidence_json=excluded.evidence_json,
+                favorite=MAX(music_tracks.favorite, excluded.favorite),
+                favorited_at=COALESCE(excluded.favorited_at, music_tracks.favorited_at),
+                accepted_at=excluded.accepted_at,
+                updated_at=CURRENT_TIMESTAMP
+            ''',
+            (
+                str(track['identity'])[:256],
+                str(track.get('artist') or '')[:300],
+                str(track.get('title') or '')[:300],
+                str(track.get('album') or '')[:300] or None,
+                str(track.get('uri') or '')[:500] or None,
+                str(track.get('source') or '')[:80] or None,
+                analyzer.get('bpm'),
+                analyzer.get('confidence'),
+                tempo.get('bpm'),
+                str(genres.get('primary') or '')[:120] or None,
+                json.dumps(list(genres.get('subgenres') or [])[:8], ensure_ascii=True),
+                json.dumps(list(genres.get('tags') or [])[:20], ensure_ascii=True),
+                genres.get('confidence'),
+                json.dumps(list(research.get('evidence') or [])[:20], ensure_ascii=True),
+                1 if payload.get('favorite') else 0,
+                str(payload.get('favorited_at') or '')[:64] or None,
+                str(payload['accepted_at'])[:64],
+            ),
+        )

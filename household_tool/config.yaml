@@ -1,6 +1,6 @@
 name: Household Tool
 slug: household_tool
-version: 0.4.4
+version: 0.5.0
 description: Internes Haushalts-Intranet mit Projekte-App und File-Sharing.
 startup: services
 boot: auto
@@ -17,6 +17,8 @@ map: []
 options:
   admin_username: admin
   admin_password: ""
+  music_ingest_token: ""
 schema:
   admin_username: str
   admin_password: password?
+  music_ingest_token: password?

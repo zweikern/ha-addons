@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import uvicorn
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -66,7 +66,9 @@ from db import (
     update_project,
     update_task_if_accessible,
     update_task_status_if_accessible,
+    upsert_music_track,
 )
+from models import MusicTrackIngest
 
 DATA_DIR = Path('/data')
 OPTIONS_PATH = DATA_DIR / 'options.json'
@@ -124,6 +126,15 @@ def csrf_token(request: Request) -> str:
 def validate_csrf(request: Request, token: str) -> bool:
     expected = request.session.get('csrf_token', '')
     return bool(expected) and secrets.compare_digest(expected, token or '')
+
+
+def validate_music_ingest_token(authorization: str | None) -> None:
+    expected = str(load_options().get('music_ingest_token') or '').strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail='Music ingest is not configured')
+    scheme, _, supplied = (authorization or '').partition(' ')
+    if scheme.casefold() != 'bearer' or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail='Invalid music ingest token')
 
 
 def redirect(url: str) -> RedirectResponse:
@@ -434,6 +445,21 @@ def root(request: Request):
     if current_user(request):
         return redirect('/apps')
     return redirect('/login')
+
+
+@app.post('/api/music/tracks')
+def ingest_music_track(
+    payload: MusicTrackIngest,
+    authorization: str | None = Header(default=None),
+):
+    validate_music_ingest_token(authorization)
+    track = payload.track
+    if not str(track.get('identity') or '').strip():
+        raise HTTPException(status_code=422, detail='track.identity is required')
+    if not str(track.get('title') or '').strip() or not str(track.get('artist') or '').strip():
+        raise HTTPException(status_code=422, detail='track title and artist are required')
+    upsert_music_track(payload.model_dump())
+    return {'status': 'ok', 'track_key': str(track['identity'])}
 
 
 @app.get('/apps', response_class=HTMLResponse)

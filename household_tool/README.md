@@ -66,6 +66,7 @@ Beispiel:
 ```yaml
 admin_username: admin
 admin_password: "Bitte-ein-langes-sicheres-Passwort"
+music_ingest_token: "Bitte-ein-separates-langes-API-Token"
 ```
 
 Wenn `admin_password` leer bleibt, wird beim ersten Start ein temporäres Passwort generiert und im Add-on-Log ausgegeben.
@@ -79,6 +80,17 @@ Für lokalen Docker-Test (oder zur Veranschaulichung der Supervisor-Optionen):
   "admin_password": "Bitte-ein-langes-sicheres-Passwort"
 }
 ```
+
+## Musik-Import
+
+Der optionale Endpunkt `POST /api/music/tracks` übernimmt explizit freigegebene
+Berryaudio-Rechercheergebnisse idempotent anhand von `track.identity`. Er ist
+nur aktiv, wenn `music_ingest_token` in den Add-on-Optionen gesetzt ist und
+erwartet `Authorization: Bearer <token>`. Das Token ist unabhängig vom
+Web-Login und sollte ausschließlich im lokalen Netz verwendet werden.
+`LIKE`-Ereignisse werden ohne vorherige Recherche angenommen und über
+`favorite` und `favorited_at` am gleichen Track gespeichert. Eine spätere
+Recherche aktualisiert die Metadaten, ohne den Favoritenstatus zu löschen.
 
 Hinweis: In Home Assistant wird `/data/options.json` vom Supervisor automatisch aus der Add-on-Konfiguration erzeugt.
 
