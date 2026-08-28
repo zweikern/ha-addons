@@ -472,7 +472,9 @@ def music_page(request: Request, view: str = 'favorites', q: str = ''):
     selected_view = 'all' if view == 'all' else 'favorites'
     tracks = list_music_tracks(selected_view == 'favorites', q)
     for track in tracks:
-        track['external_url'] = music_track_url(track.get('uri'))
+        track['external_url'] = music_track_url(
+            track.get('uri'), track.get('artist'), track.get('title')
+        )
     return templates.TemplateResponse(
         request,
         'music.html',

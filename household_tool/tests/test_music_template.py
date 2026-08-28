@@ -24,6 +24,18 @@ class MusicTemplateTest(unittest.TestCase):
         )
         self.assertIsNone(music_track_url("spotify:album:abc123"))
 
+    def test_shazam_uri_becomes_shazam_url(self):
+        self.assertEqual(
+            music_track_url("shazam:track:10276368"),
+            "https://www.shazam.com/track/10276368",
+        )
+
+    def test_radio_uri_falls_back_to_spotify_search(self):
+        self.assertEqual(
+            music_track_url("radio:https://example/stream", "Air", "Sexy Boy"),
+            "https://open.spotify.com/search/Air%20Sexy%20Boy",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

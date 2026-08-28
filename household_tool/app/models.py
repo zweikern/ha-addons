@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from pydantic import BaseModel, Field
 
 
@@ -26,12 +28,24 @@ class MusicTrackIngest(BaseModel):
     research: dict = Field(default_factory=dict)
 
 
-def music_track_url(uri: str | None) -> str | None:
+def music_track_url(
+    uri: str | None,
+    artist: str | None = None,
+    title: str | None = None,
+) -> str | None:
     value = str(uri or '').strip()
     prefix = 'spotify:track:'
     if value.startswith(prefix):
         track_id = value[len(prefix):].split('?', 1)[0]
         return f'https://open.spotify.com/track/{track_id}' if track_id else None
+    shazam_prefix = 'shazam:track:'
+    if value.startswith(shazam_prefix):
+        track_key = value[len(shazam_prefix):].strip()
+        return f'https://www.shazam.com/track/{track_key}' if track_key else None
     if value.startswith(('https://', 'http://')):
         return value
-    return None
+    query = ' '.join(
+        part for part in (artist, title)
+        if part and str(part).strip()
+    ).strip()
+    return f'https://open.spotify.com/search/{quote(query)}' if query else None
