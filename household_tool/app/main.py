@@ -56,7 +56,9 @@ from db import (
     list_project_history,
     list_project_members,
     list_project_tasks,
+    list_music_tracks,
     list_users,
+    music_stats,
     remove_project_member,
     share_fs_folder,
     stats,
@@ -68,7 +70,7 @@ from db import (
     update_task_status_if_accessible,
     upsert_music_track,
 )
-from models import MusicTrackIngest
+from models import MusicTrackIngest, music_track_url
 
 DATA_DIR = Path('/data')
 OPTIONS_PATH = DATA_DIR / 'options.json'
@@ -460,6 +462,29 @@ def ingest_music_track(
         raise HTTPException(status_code=422, detail='track title and artist are required')
     upsert_music_track(payload.model_dump())
     return {'status': 'ok', 'track_key': str(track['identity'])}
+
+
+@app.get('/music', response_class=HTMLResponse)
+def music_page(request: Request, view: str = 'favorites', q: str = ''):
+    user, response = require_login(request)
+    if response:
+        return response
+    selected_view = 'all' if view == 'all' else 'favorites'
+    tracks = list_music_tracks(selected_view == 'favorites', q)
+    for track in tracks:
+        track['external_url'] = music_track_url(track.get('uri'))
+    return templates.TemplateResponse(
+        request,
+        'music.html',
+        {
+            'user': user,
+            'tracks': tracks,
+            'music_stats': music_stats(),
+            'view': selected_view,
+            'query': q.strip(),
+            'csrf_token': csrf_token(request),
+        },
+    )
 
 
 @app.get('/apps', response_class=HTMLResponse)

@@ -24,3 +24,14 @@ class MusicTrackIngest(BaseModel):
     track: dict
     analyzer: dict
     research: dict = Field(default_factory=dict)
+
+
+def music_track_url(uri: str | None) -> str | None:
+    value = str(uri or '').strip()
+    prefix = 'spotify:track:'
+    if value.startswith(prefix):
+        track_id = value[len(prefix):].split('?', 1)[0]
+        return f'https://open.spotify.com/track/{track_id}' if track_id else None
+    if value.startswith(('https://', 'http://')):
+        return value
+    return None

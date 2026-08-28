@@ -47,16 +47,36 @@ class MusicIngestTest(unittest.TestCase):
                 payload["favorite"] = True
                 payload["favorited_at"] = "2026-08-28T18:05:00+00:00"
                 db.upsert_music_track(payload)
-                with sqlite3.connect(db.DB_PATH) as connection:
+                second_payload = {
+                    **payload,
+                    "favorite": False,
+                    "favorited_at": None,
+                    "track": {
+                        **payload["track"],
+                        "identity": "spotify:track:456",
+                        "title": "Morning Light",
+                    },
+                }
+                db.upsert_music_track(second_payload)
+                connection = sqlite3.connect(db.DB_PATH)
+                try:
                     row = connection.execute(
                         "SELECT analyzer_bpm, subgenres_json, favorite, favorited_at FROM music_tracks"
                     ).fetchone()
                     count = connection.execute("SELECT COUNT(*) FROM music_tracks").fetchone()[0]
-                self.assertEqual(count, 1)
+                finally:
+                    connection.close()
+                self.assertEqual(count, 2)
                 self.assertEqual(row[0], 126)
                 self.assertEqual(json.loads(row[1]), ["Indie Dance"])
                 self.assertEqual(row[2], 1)
                 self.assertEqual(row[3], "2026-08-28T18:05:00+00:00")
+                favorites = db.list_music_tracks(favorites_only=True)
+                self.assertEqual([item["track_key"] for item in favorites], ["spotify:track:123"])
+                self.assertEqual(favorites[0]["subgenres"], ["Indie Dance"])
+                search = db.list_music_tracks(favorites_only=False, query="Morning")
+                self.assertEqual([item["track_key"] for item in search], ["spotify:track:456"])
+                self.assertEqual(db.music_stats(), {"total": 2, "favorites": 1})
             finally:
                 db.DATA_DIR, db.DB_PATH = original_dir, original_path
 

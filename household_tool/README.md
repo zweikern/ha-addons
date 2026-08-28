@@ -9,6 +9,7 @@ MVP-Add-on für ein kleines internes Haushalts-Intranet auf Home Assistant OS.
 - Aufgaben pro Projekt (offen, in Arbeit, erledigt)
 - SQLite persistent unter `/data/app.db`
 - Initialer Admin beim ersten Start
+- Musikfavoriten-Liste mit Suche, BPM, Genre und Spotify-Link
 
 ## Home Assistant OS Installation (exakt)
 

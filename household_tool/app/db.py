@@ -1446,3 +1446,51 @@ def upsert_music_track(payload: dict[str, Any]) -> None:
                 str(payload['accepted_at'])[:64],
             ),
         )
+
+
+def list_music_tracks(
+    favorites_only: bool = True,
+    query: str = '',
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    clauses = []
+    params: list[Any] = []
+    if favorites_only:
+        clauses.append('favorite = 1')
+    normalized_query = query.strip()
+    if normalized_query:
+        clauses.append("(artist LIKE ? OR title LIKE ? OR album LIKE ? OR primary_genre LIKE ?)")
+        pattern = f'%{normalized_query[:120]}%'
+        params.extend([pattern, pattern, pattern, pattern])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ''
+    params.append(max(1, min(int(limit), 1000)))
+    with get_connection() as conn:
+        rows = conn.execute(
+            f'''
+            SELECT * FROM music_tracks
+            {where}
+            ORDER BY favorite DESC,
+                     COALESCE(favorited_at, accepted_at) DESC,
+                     artist COLLATE NOCASE ASC,
+                     title COLLATE NOCASE ASC
+            LIMIT ?
+            ''',
+            tuple(params),
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item['subgenres'] = json.loads(item.pop('subgenres_json') or '[]')
+        item['tags'] = json.loads(item.pop('tags_json') or '[]')
+        item['evidence'] = json.loads(item.pop('evidence_json') or '[]')
+        result.append(item)
+    return result
+
+
+def music_stats() -> dict[str, int]:
+    with get_connection() as conn:
+        total = int(conn.execute('SELECT COUNT(*) FROM music_tracks').fetchone()[0] or 0)
+        favorites = int(
+            conn.execute('SELECT COUNT(*) FROM music_tracks WHERE favorite = 1').fetchone()[0] or 0
+        )
+    return {'total': total, 'favorites': favorites}

@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Musik | Household Tool{% endblock %}
+{% block content %}
+<section class="music-hero">
+  <div>
+    <p class="eyebrow">Berryaudio Library</p>
+    <h1>Musikfavoriten</h1>
+    <p class="lede">Gespeicherte Likes und recherchierte Tracks aus dem Wohnzimmer-Audiosystem.</p>
+  </div>
+  <div class="music-totals" aria-label="Musikstatistik">
+    <span><strong>{{ music_stats.favorites }}</strong> Favoriten</span>
+    <span><strong>{{ music_stats.total }}</strong> Tracks</span>
+  </div>
+</section>
+
+<section class="card music-toolbar">
+  <div class="filters">
+    <a class="filter-chip {% if view == 'favorites' %}is-active{% endif %}" href="/music?view=favorites">Favoriten</a>
+    <a class="filter-chip {% if view == 'all' %}is-active{% endif %}" href="/music?view=all">Alle Tracks</a>
+  </div>
+  <form class="music-search" method="get" action="/music">
+    <input type="hidden" name="view" value="{{ view }}">
+    <label for="music-q">Suchen</label>
+    <input id="music-q" name="q" value="{{ query }}" placeholder="Track, Interpret, Album oder Genre">
+    <button type="submit">Filtern</button>
+  </form>
+</section>
+
+{% if tracks %}
+  <section class="music-grid">
+    {% for track in tracks %}
+      <article class="card music-track {% if track.favorite %}is-favorite{% endif %}">
+        <div class="music-track-head">
+          <div class="music-heart" title="{% if track.favorite %}Favorit{% else %}Gespeichert{% endif %}">
+            {% if track.favorite %}♥{% else %}•{% endif %}
+          </div>
+          <div class="music-title">
+            <h2>{{ track.title }}</h2>
+            <p>{{ track.artist }}</p>
+          </div>
+          {% if track.external_url %}
+            <a class="music-open" href="{{ track.external_url }}" target="_blank" rel="noopener noreferrer">Öffnen</a>
+          {% endif %}
+        </div>
+
+        {% if track.album %}<p class="music-album">{{ track.album }}</p>{% endif %}
+
+        <div class="music-facts">
+          <div><span>Analyzer</span><strong>{{ track.analyzer_bpm|round|int if track.analyzer_bpm else '–' }} BPM</strong></div>
+          <div><span>Recherche</span><strong>{{ track.researched_bpm|round|int if track.researched_bpm else '–' }} BPM</strong></div>
+          <div><span>Genre</span><strong>{{ track.primary_genre or 'Nicht recherchiert' }}</strong></div>
+          <div><span>Quelle</span><strong>{{ track.source or 'Unbekannt' }}</strong></div>
+        </div>
+
+        {% if track.subgenres %}
+          <div class="music-tags">
+            {% for genre in track.subgenres %}<span>{{ genre }}</span>{% endfor %}
+          </div>
+        {% endif %}
+
+        <p class="music-date">
+          {% if track.favorite %}Favorisiert{% else %}Gespeichert{% endif %}:
+          {{ track.favorited_at or track.accepted_at }}
+        </p>
+      </article>
+    {% endfor %}
+  </section>
+{% else %}
+  <section class="card music-empty">
+    <div class="music-empty-icon">♥</div>
+    <h2>Noch keine passenden Tracks</h2>
+    <p>Starte einen Track auf Berryaudio und drücke auf dem Touchdisplay den Like-Button.</p>
+  </section>
+{% endif %}
+{% endblock %}
