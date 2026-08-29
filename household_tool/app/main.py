@@ -59,6 +59,7 @@ from db import (
     list_music_tracks,
     list_users,
     music_stats,
+    remove_music_track,
     remove_project_member,
     share_fs_folder,
     stats,
@@ -462,6 +463,19 @@ def ingest_music_track(
         raise HTTPException(status_code=422, detail='track title and artist are required')
     upsert_music_track(payload.model_dump())
     return {'status': 'ok', 'track_key': str(track['identity'])}
+
+
+@app.delete('/api/music/tracks')
+def delete_music_track(
+    track_key: str,
+    authorization: str | None = Header(default=None),
+):
+    validate_music_ingest_token(authorization)
+    key = track_key.strip()
+    if not key:
+        raise HTTPException(status_code=422, detail='track_key is required')
+    remove_music_track(key)
+    return {'status': 'ok', 'track_key': key}
 
 
 @app.get('/music', response_class=HTMLResponse)

@@ -132,6 +132,7 @@ def init_db() -> None:
                 album TEXT,
                 uri TEXT,
                 source TEXT,
+                image_url TEXT,
                 analyzer_bpm REAL,
                 analyzer_confidence REAL,
                 researched_bpm REAL,
@@ -172,6 +173,9 @@ def init_db() -> None:
 
         if not _has_column(conn, 'music_tracks', 'favorited_at'):
             conn.execute('ALTER TABLE music_tracks ADD COLUMN favorited_at TEXT')
+
+        if not _has_column(conn, 'music_tracks', 'image_url'):
+            conn.execute('ALTER TABLE music_tracks ADD COLUMN image_url TEXT')
 
 
 def get_user_by_username(username: str) -> sqlite3.Row | None:
@@ -1402,17 +1406,18 @@ def upsert_music_track(payload: dict[str, Any]) -> None:
         conn.execute(
             '''
             INSERT INTO music_tracks (
-                track_key, artist, title, album, uri, source,
+                track_key, artist, title, album, uri, source, image_url,
                 analyzer_bpm, analyzer_confidence, researched_bpm,
                 primary_genre, subgenres_json, tags_json, genre_confidence,
                 evidence_json, favorite, favorited_at, accepted_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(track_key) DO UPDATE SET
                 artist=excluded.artist,
                 title=excluded.title,
                 album=excluded.album,
                 uri=excluded.uri,
                 source=excluded.source,
+                image_url=excluded.image_url,
                 analyzer_bpm=excluded.analyzer_bpm,
                 analyzer_confidence=excluded.analyzer_confidence,
                 researched_bpm=excluded.researched_bpm,
@@ -1433,6 +1438,7 @@ def upsert_music_track(payload: dict[str, Any]) -> None:
                 str(track.get('album') or '')[:300] or None,
                 str(track.get('uri') or '')[:500] or None,
                 str(track.get('source') or '')[:80] or None,
+                str(track.get('image_url') or '')[:500] or None,
                 analyzer.get('bpm'),
                 analyzer.get('confidence'),
                 tempo.get('bpm'),
@@ -1446,6 +1452,11 @@ def upsert_music_track(payload: dict[str, Any]) -> None:
                 str(payload['accepted_at'])[:64],
             ),
         )
+
+
+def remove_music_track(track_key: str) -> None:
+    with get_connection() as conn:
+        conn.execute('DELETE FROM music_tracks WHERE track_key=?', (track_key,))
 
 
 def list_music_tracks(

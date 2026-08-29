@@ -30,6 +30,11 @@
   <section class="music-grid">
     {% for track in tracks %}
       <article class="card music-track {% if track.favorite %}is-favorite{% endif %}">
+        {% if track.image_url %}
+          <img class="music-cover" src="{{ track.image_url }}" alt="" loading="lazy"
+               referrerpolicy="no-referrer"
+               style="display:block;width:100%;height:auto;max-height:140px;object-fit:cover;border-radius:4px;margin-bottom:10px;">
+        {% endif %}
         <div class="music-track-head">
           <div class="music-heart" title="{% if track.favorite %}Favorit{% else %}Gespeichert{% endif %}">
             {% if track.favorite %}♥{% else %}•{% endif %}
