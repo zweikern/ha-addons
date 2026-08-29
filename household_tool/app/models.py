@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from urllib.parse import quote
 
 from pydantic import BaseModel, Field
@@ -28,6 +29,53 @@ class MusicTrackIngest(BaseModel):
     research: dict = Field(default_factory=dict)
 
 
+_STATION_MARKERS = (
+    'radio',
+    'fm',
+    'channel',
+    'stream',
+    'germany',
+    'deutschland',
+    'austria',
+    'france',
+    'switzerland',
+    'united kingdom',
+    'netherlands',
+    'italy',
+    'spain',
+)
+
+
+def _looks_like_station(artist: str) -> bool:
+    """True wenn der Artist-Wert offensichtlich ein Sender/Channel-Name ist.
+
+    Radio-Streams liefern haeufig den Kanal als Artist (z.B. "90s / Germany")
+    statt des echten Kuenstlers.
+    """
+    text = str(artist or '').strip().casefold()
+    if not text:
+        return False
+    if '/' in text:
+        return True
+    if any(marker in text for marker in _STATION_MARKERS):
+        return True
+    return bool(re.match(r'^\d{2,4}s(?:\b|$)', text))
+
+
+def _search_parts(artist: str | None, title: str | None) -> str:
+    artist = str(artist or '').strip()
+    title = str(title or '').strip()
+    # Bei Sender-Artist (z.B. "90s / Germany") steckt der echte Kuenstler im
+    # Titel "Artist - Track". Dann Artist und Track aus dem Titel uebernehmen.
+    if artist and ' - ' in title:
+        title_artist, _, title_track = title.partition(' - ')
+        title_artist = title_artist.strip()
+        title_track = title_track.strip()
+        if title_artist and title_track and _looks_like_station(artist):
+            artist, title = title_artist, title_track
+    return ' '.join(part for part in (artist, title) if part).strip()
+
+
 def music_track_url(
     uri: str | None,
     artist: str | None = None,
@@ -44,8 +92,5 @@ def music_track_url(
         return f'https://www.shazam.com/track/{track_key}' if track_key else None
     if value.startswith(('https://', 'http://')):
         return value
-    query = ' '.join(
-        part for part in (artist, title)
-        if part and str(part).strip()
-    ).strip()
+    query = _search_parts(artist, title)
     return f'https://open.spotify.com/search/{quote(query)}' if query else None

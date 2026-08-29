@@ -36,6 +36,26 @@ class MusicTemplateTest(unittest.TestCase):
             "https://open.spotify.com/search/Air%20Sexy%20Boy",
         )
 
+    def test_station_artist_uses_title_artist_and_track(self):
+        self.assertEqual(
+            music_track_url(
+                "radio:https://example/stream",
+                "90s / Germany",
+                "WestBam - Beatbox Rocker",
+            ),
+            "https://open.spotify.com/search/WestBam%20Beatbox%20Rocker",
+        )
+
+    def test_real_artist_with_dash_title_keeps_artist(self):
+        self.assertEqual(
+            music_track_url(
+                "radio:https://example/stream",
+                "WestBam",
+                "Beatbox Rocker - Live",
+            ),
+            "https://open.spotify.com/search/WestBam%20Beatbox%20Rocker%20-%20Live",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
