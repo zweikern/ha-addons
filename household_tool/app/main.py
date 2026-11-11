@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import mimetypes
 import secrets
 import tempfile
@@ -56,6 +57,8 @@ from db import (
     list_project_history,
     list_project_members,
     list_project_tasks,
+    normalize_deadline,
+    project_today,
     list_music_tracks,
     list_users,
     music_stats,
@@ -73,7 +76,7 @@ from db import (
 )
 from models import MusicTrackIngest, music_track_url
 
-DATA_DIR = Path('/data')
+DATA_DIR = Path(os.environ.get('HOUSEHOLD_DATA_DIR', '/data'))
 OPTIONS_PATH = DATA_DIR / 'options.json'
 SECRET_KEY_PATH = DATA_DIR / 'secret_key'
 FILESHARE_DIR = DATA_DIR / 'fileshare'
@@ -83,12 +86,13 @@ USER_FILESHARE_QUOTA_BYTES = 2 * 1024 * 1024 * 1024
 VALID_ROLES = {'admin', 'user'}
 VALID_MEMBER_ROLES = {'member', 'manager'}
 VALID_TASK_STATUS = {'open', 'in_progress', 'done'}
-VALID_PROJECT_VIEWS = {'all', 'open', 'done', 'focus'}
+VALID_PROJECT_VIEWS = {'all', 'open', 'done', 'history', 'focus', 'today', 'tomorrow', 'overdue', 'in_progress'}
 MIN_PASSWORD_LENGTH = 8
 
 app = FastAPI(title='Household Tool')
-app.mount('/static', StaticFiles(directory='/app/static'), name='static')
-templates = Jinja2Templates(directory='/app/templates')
+APP_DIR = Path(__file__).resolve().parent
+app.mount('/static', StaticFiles(directory=APP_DIR / 'static'), name='static')
+templates = Jinja2Templates(directory=APP_DIR / 'templates')
 
 
 def load_options() -> dict[str, Any]:
@@ -161,6 +165,8 @@ def require_admin(request: Request):
 
 
 def normalize_view(view: str | None) -> str:
+    if view == 'done':
+        return 'history'
     if view in VALID_PROJECT_VIEWS:
         return str(view)
     return 'all'
@@ -604,11 +610,14 @@ def projects_page(
     parent_options_edit = []
     attachments_by_task: dict[int, list[Any]] = defaultdict(list)
     can_manage = False
+    deadline_counts = {'today': 0, 'tomorrow': 0, 'overdue': 0}
 
     if active_project:
         project_id = int(active_project['id'])
         tasks = list_project_tasks(project_id, project_view)
         history = list_project_history(project_id)
+        for deadline_view in deadline_counts:
+            deadline_counts[deadline_view] = len(list_project_tasks(project_id, deadline_view))
         members = list_project_members(project_id)
         member_ids = {int(member['id']) for member in members}
         all_users = list_users()
@@ -635,6 +644,8 @@ def projects_page(
             'active_project': active_project,
             'tasks': tasks,
             'history': history,
+            'deadline_counts': deadline_counts,
+            'today': project_today().isoformat(),
             'members': members,
             'task_assignees': task_assignees,
             'shareable_users': shareable_users,
@@ -760,6 +771,7 @@ def create_task_submit(
     status: str = Form(default='open'),
     assignee_id: str = Form(default=''),
     focus: str = Form(default='0'),
+    deadline: str = Form(default=''),
     view: str = Form(default='all'),
     csrf: str = Form(...),
 ):
@@ -794,6 +806,11 @@ def create_task_submit(
         if assignee not in member_ids:
             return redirect(projects_url(project_id, project_view, 'assignee_not_member'))
 
+    try:
+        deadline_value = normalize_deadline(deadline)
+    except ValueError:
+        return redirect(projects_url(project_id, project_view, 'invalid_deadline'))
+
     create_task(
         project_id=project_id,
         title=task_title,
@@ -801,6 +818,7 @@ def create_task_submit(
         status=status,
         assignee_id=assignee,
         focus=focus == '1',
+        deadline=deadline_value,
     )
     return redirect(projects_url(project_id, project_view))
 
@@ -841,6 +859,7 @@ def edit_task_submit(
     status: str = Form(default='open'),
     assignee_id: str = Form(default=''),
     focus: str = Form(default='0'),
+    deadline: str = Form(default=''),
     project_id: int = Form(...),
     view: str = Form(default='all'),
     csrf: str = Form(...),
@@ -877,6 +896,11 @@ def edit_task_submit(
         if assignee not in member_ids:
             return redirect(projects_url(actual_project_id, project_view, 'assignee_not_member'))
 
+    try:
+        deadline_value = normalize_deadline(deadline)
+    except ValueError:
+        return redirect(projects_url(actual_project_id, project_view, 'invalid_deadline'))
+
     updated_project_id = update_task_if_accessible(
         task_id=task_id,
         user_id=int(user['id']),
@@ -885,6 +909,7 @@ def edit_task_submit(
         status=status,
         assignee_id=assignee,
         focus=focus == '1',
+        deadline=deadline_value,
     )
     if updated_project_id is None:
         return redirect(projects_url(project_id, project_view, 'task_not_found'))

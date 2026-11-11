@@ -5,6 +5,8 @@ ENV PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
+RUN apk add --no-cache tzdata
+
 COPY app/requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt
 

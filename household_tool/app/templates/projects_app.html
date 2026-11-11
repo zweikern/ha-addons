@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Projekte App | Household Tool{% endblock %}
 {% block content %}
-<div class="project-app">
+<div class="project-app pm-workspace">
   <aside class="project-sidebar card">
     <div class="project-sidebar-head">
       <h1>Projekte</h1>
@@ -66,13 +66,18 @@
           {% if active_project.membership_role == 'manager' and active_project.access_type == 'shared' %}
             <span class="chip chip-manager">manager</span>
           {% endif %}
-          <span class="chip">Fokus offen: {{ active_project.focus_count }}</span>
+          <a class="filter-chip" href="/projects?project_id={{ active_project.id }}&view=focus">Fokus: {{ active_project.focus_count }}</a>
+          {% for key, title in [('today', 'Heute'), ('tomorrow', 'Morgen'), ('overdue', 'Überfällig')] %}
+          <a class="filter-chip {% if project_view == key %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view={{ key }}">{{ title }}: {{ deadline_counts[key] }}</a>
+          {% endfor %}
+          <span>{{ active_project.task_count - active_project.open_task_count }} / {{ active_project.task_count }} erledigt</span>
+          <progress aria-label="Projektfortschritt" max="{{ active_project.task_count or 1 }}" value="{{ active_project.task_count - active_project.open_task_count }}"></progress>
         </div>
       </header>
 
       {% if can_manage %}
-        <section class="card">
-          <h3>Projekt bearbeiten</h3>
+        <details class="card">
+          <summary>Projekteinstellungen</summary>
           <form method="post" action="/projects/{{ active_project.id }}/edit" class="form-grid compact-form">
             <input type="hidden" name="csrf" value="{{ csrf_token }}">
             <input type="hidden" name="view" value="{{ project_view }}">
@@ -93,18 +98,19 @@
 
             <button type="submit">Projekt speichern</button>
           </form>
-        </section>
+        </details>
       {% endif %}
 
       <section class="card">
         <div class="filters">
-          <a class="filter-chip {% if project_view == 'all' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}">Alle</a>
+          <a class="filter-chip {% if project_view == 'all' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}">Aktive Aufgaben</a>
           <a class="filter-chip {% if project_view == 'open' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=open">Offen</a>
           <a class="filter-chip {% if project_view == 'focus' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=focus">Fokus</a>
-          <a class="filter-chip {% if project_view == 'done' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=done">Erledigt</a>
+          <a class="filter-chip {% if project_view == 'in_progress' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=in_progress">In Arbeit</a>
+          <a class="filter-chip {% if project_view == 'history' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=history">Historie ({{ history|length }})</a>
         </div>
 
-        <h3>Neue Aufgabe</h3>
+        <details><summary>+ Neue Aufgabe</summary>
         <form method="post" action="/projects/{{ active_project.id }}/tasks" class="task-create-grid">
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
           <input type="hidden" name="view" value="{{ project_view }}">
@@ -131,12 +137,18 @@
           </select>
 
           <label class="inline-check"><input type="checkbox" name="focus" value="1"> Fokus</label>
+          <label for="deadline">Deadline</label>
+          <input id="deadline" type="date" name="deadline">
           <button type="submit">Aufgabe hinzufügen</button>
         </form>
+        </details>
       </section>
 
       <section class="card">
-        <h3>Aufgaben</h3>
+        <h3>{{ 'Historie' if project_view == 'history' else 'Aufgaben' }} ({{ tasks|length }})</h3>
+        <label for="task-search">Aufgaben durchsuchen</label>
+        <input id="task-search" type="search" placeholder="Titel, Beschreibung, zuständige Person …">
+        {% if project_view == 'history' %}<p class="muted">Alle abgeschlossenen Aufgaben mit vollständigen Details. Über „Offen“ kannst du sie wieder aktivieren.</p>{% endif %}
         {% if tasks %}
           <table>
             <thead>
@@ -151,13 +163,14 @@
             <tbody>
               {% for task in tasks %}
                 {% set task_attachments = attachments_by_task.get(task.id, []) %}
-                <tr>
+                <tr data-task-search="{{ (task.title ~ ' ' ~ task.description ~ ' ' ~ (task.assignee_name or ''))|lower }}">
                   <td>
                     <div class="task-title">
                       {% if task.focus %}<span class="focus-dot" title="Fokus">★</span>{% endif %}
                       {{ task.title }}
                     </div>
-                    {% if task.description %}<div class="task-sub">{{ task.description }}</div>{% endif %}
+                    <details class="pm-description"><summary>Details öffnen</summary><p>{{ task.description or 'Keine Beschreibung.' }}</p><p class="muted">Erstellt: {{ task.created_at }}</p></details>
+                    {% if task.deadline %}<div class="chip {% if task.deadline < today and task.status != 'done' %}pm-overdue{% endif %}">Deadline: {{ task.deadline }}</div>{% endif %}
                     {% if task.completed_at %}<div class="task-sub">Abgeschlossen: {{ task.completed_at }}</div>{% endif %}
                   </td>
                   <td>
@@ -167,6 +180,7 @@
                   </td>
                   <td>{{ task.assignee_name or '-' }}</td>
                   <td>
+                    <details><summary>Anhänge ({{ task_attachments|length }})</summary>
                     {% if task_attachments %}
                       <ul class="attachment-list">
                         {% for a in task_attachments %}
@@ -188,6 +202,7 @@
                       <button type="submit" class="button-small secondary">Upload</button>
                     </form>
                     <div class="muted">Max {{ max_attachment_mb }} MB</div>
+                    </details>
                   </td>
                   <td>
                     <div class="task-actions">
@@ -234,6 +249,8 @@
 
                         <label>Beschreibung</label>
                         <textarea name="description" rows="2">{{ task.description }}</textarea>
+                        <label>Deadline</label>
+                        <input type="date" name="deadline" value="{{ task.deadline or '' }}">
 
                         <label>Status</label>
                         <select name="status">
@@ -264,26 +281,8 @@
         {% endif %}
       </section>
 
-      <section class="card">
-        <h3>Historie (abgeschlossene Aufgaben)</h3>
-        {% if history %}
-          <ul class="history-list">
-            {% for item in history %}
-              <li>
-                <strong>{{ item.title }}</strong>
-                {% if item.assignee_name %}<span class="muted"> · {{ item.assignee_name }}</span>{% endif %}
-                {% if item.focus %}<span class="chip chip-manager">Fokus</span>{% endif %}
-                <div class="muted">{{ item.completed_at }}</div>
-              </li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="muted">Noch keine abgeschlossenen Aufgaben.</p>
-        {% endif %}
-      </section>
-
-      <section class="card">
-        <h3>Projektmitglieder</h3>
+      <details class="card">
+        <summary>Team &amp; Freigaben ({{ members|length }})</summary>
 
         {% if can_manage and shareable_users %}
           <form method="post" action="/projects/{{ active_project.id }}/share" class="share-grid">
@@ -341,7 +340,7 @@
             {% endfor %}
           </tbody>
         </table>
-      </section>
+      </details>
     {% else %}
       <section class="card">
         <h2>Keine Projekte vorhanden</h2>
@@ -350,4 +349,5 @@
     {% endif %}
   </section>
 </div>
+<script src="{{ url_for('static', path='projects.js') }}"></script>
 {% endblock %}

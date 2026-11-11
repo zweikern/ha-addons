@@ -1,5 +1,17 @@
 # Household Tool (Home Assistant Add-on)
 
+## Projekt-Wiki und Version 0.6.0
+
+Das [Projekt-Wiki](docs/project-wiki/README.md) dokumentiert die Plattform,
+die Projekte-App, Datenmodell, Rechte, Betrieb, Tests und die Agenten-Uebergabe.
+Die [Begutachtung und Roadmap](docs/project-wiki/review-roadmap.md) beschreibt
+Verbesserungen und priorisierte Erweiterungsvorschlaege.
+
+Neu: vollstaendige Historie erledigter Aufgaben mit Wiederoeffnen, optionale
+Deadlines, anklickbare Heute-/Morgen-/Ueberfaellig-Zaehler, Fortschritt,
+Aufgabensuche und kompakte Aufgabenansichten. Termine gelten pro Projekt
+nach dem Kalendertag in Europe/Berlin.
+
 MVP-Add-on für ein kleines internes Haushalts-Intranet auf Home Assistant OS.
 
 ## Funktionen (MVP)

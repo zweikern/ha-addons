@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import os
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
-DATA_DIR = Path('/data')
+DATA_DIR = Path(os.environ.get('HOUSEHOLD_DATA_DIR', '/data'))
 DB_PATH = DATA_DIR / 'app.db'
 
 
@@ -153,6 +156,8 @@ def init_db() -> None:
         )
 
         # Schema migrations for existing databases
+        if not _has_column(conn, 'tasks', 'deadline'):
+            conn.execute('ALTER TABLE tasks ADD COLUMN deadline TEXT')
         if not _has_column(conn, 'projects', 'parent_id'):
             conn.execute('ALTER TABLE projects ADD COLUMN parent_id INTEGER')
 
@@ -524,7 +529,9 @@ def create_task(
     status: str,
     assignee_id: int | None,
     focus: bool = False,
+    deadline: str | None = None,
 ) -> int:
+    deadline = normalize_deadline(deadline)
     with get_connection() as conn:
         completed_at = 'CURRENT_TIMESTAMP' if status == 'done' else None
         if completed_at:
@@ -543,19 +550,38 @@ def create_task(
                 ''',
                 (project_id, title, description, status, 1 if focus else 0, assignee_id),
             )
+        conn.execute('UPDATE tasks SET deadline = ? WHERE id = ?', (deadline, cur.lastrowid))
         return int(cur.lastrowid)
+
+
+def normalize_deadline(value: str | None) -> str | None:
+    return date.fromisoformat(value).isoformat() if value else None
+
+
+def project_today() -> date:
+    return datetime.now(ZoneInfo('Europe/Berlin')).date()
 
 
 def list_project_tasks(project_id: int, view: str = 'all') -> list[sqlite3.Row]:
     where = 'WHERE t.project_id = ?'
     params: list[Any] = [project_id]
 
+    if view not in {'done', 'history'}:
+        where += " AND t.status != 'done'"
     if view == 'open':
-        where += " AND t.status IN ('open', 'in_progress')"
-    elif view == 'done':
+        where += " AND t.status = 'open'"
+    elif view in {'done', 'history'}:
         where += " AND t.status = 'done'"
     elif view == 'focus':
         where += " AND t.focus = 1 AND t.status IN ('open', 'in_progress')"
+    elif view in {'today', 'tomorrow'}:
+        where += ' AND t.deadline = ?'
+        params.append((project_today() + timedelta(days=view == 'tomorrow')).isoformat())
+    elif view == 'overdue':
+        where += ' AND t.deadline < ?'
+        params.append(project_today().isoformat())
+    elif view == 'in_progress':
+        where += " AND t.status = 'in_progress'"
 
     query = f'''
         SELECT
@@ -563,6 +589,7 @@ def list_project_tasks(project_id: int, view: str = 'all') -> list[sqlite3.Row]:
             t.project_id,
             t.title,
             t.description,
+            t.deadline,
             t.status,
             t.focus,
             t.created_at,
@@ -574,6 +601,9 @@ def list_project_tasks(project_id: int, view: str = 'all') -> list[sqlite3.Row]:
         LEFT JOIN users u ON u.id = t.assignee_id
         {where}
         ORDER BY
+            t.completed_at DESC,
+            t.deadline IS NULL,
+            t.deadline ASC,
             t.focus DESC,
             CASE WHEN t.status = 'done' THEN 1 ELSE 0 END,
             t.created_at DESC,
@@ -584,25 +614,9 @@ def list_project_tasks(project_id: int, view: str = 'all') -> list[sqlite3.Row]:
         return conn.execute(query, tuple(params)).fetchall()
 
 
-def list_project_history(project_id: int, limit: int = 25) -> list[sqlite3.Row]:
-    with get_connection() as conn:
-        return conn.execute(
-            '''
-            SELECT
-                t.id,
-                t.title,
-                t.description,
-                t.completed_at,
-                t.focus,
-                u.username AS assignee_name
-            FROM tasks t
-            LEFT JOIN users u ON u.id = t.assignee_id
-            WHERE t.project_id = ? AND t.completed_at IS NOT NULL
-            ORDER BY t.completed_at DESC, t.id DESC
-            LIMIT ?
-            ''',
-            (project_id, limit),
-        ).fetchall()
+def list_project_history(project_id: int, limit: int | None = None) -> list[sqlite3.Row]:
+    rows = list_project_tasks(project_id, 'history')
+    return rows if limit is None else rows[:limit]
 
 
 def get_task_if_accessible(task_id: int, user_id: int) -> sqlite3.Row | None:
@@ -666,7 +680,9 @@ def update_task_if_accessible(
     status: str,
     assignee_id: int | None,
     focus: bool,
+    deadline: str | None = None,
 ) -> int | None:
+    deadline = normalize_deadline(deadline)
     with get_connection() as conn:
         row = conn.execute(
             '''
@@ -690,13 +706,14 @@ def update_task_if_accessible(
                 status = ?,
                 focus = ?,
                 assignee_id = ?,
+                deadline = ?,
                 completed_at = CASE
                     WHEN ? = 'done' THEN COALESCE(completed_at, CURRENT_TIMESTAMP)
                     ELSE NULL
                 END
             WHERE id = ?
             ''',
-            (title, description, status, 1 if focus else 0, assignee_id, status, task_id),
+            (title, description, status, 1 if focus else 0, assignee_id, deadline, status, task_id),
         )
         return int(row['project_id'])
 
