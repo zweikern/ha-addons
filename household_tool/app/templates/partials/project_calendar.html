@@ -1,0 +1,41 @@
+      {% if project_view == 'calendar' %}
+      <section class="card calendar-view">
+        <div class="calendar-nav">
+          <a class="filter-chip" href="/projects?project_id={{ active_project.id }}&view=calendar&month={{ calendar_prev_month.isoformat()[:7] }}">← {{ calendar_prev_month.strftime('%B %Y') }}</a>
+          <h3>{{ calendar_month_start.strftime('%B %Y') }}</h3>
+          <a class="filter-chip" href="/projects?project_id={{ active_project.id }}&view=calendar&month={{ calendar_next_month.isoformat()[:7] }}">{{ calendar_next_month.strftime('%B %Y') }} →</a>
+        </div>
+        <table class="calendar-grid">
+          <thead><tr>{% for d in ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'] %}<th>{{ d }}</th>{% endfor %}</tr></thead>
+          <tbody>
+            {% for week in calendar_weeks %}
+              <tr>
+                {% for cell in week %}
+                  <td class="{% if not cell.in_month %}calendar-outside{% endif %}">
+                    <span class="calendar-day">{{ cell.day.day }}</span>
+                    {% for task in cell.tasks %}
+                      <a class="calendar-task" href="/tasks/{{ task.id }}">{{ task.title }}</a>
+                    {% endfor %}
+                  </td>
+                {% endfor %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="calendar-agenda">
+          {% set agenda = namespace(found=false) %}
+          {% for week in calendar_weeks %}{% for cell in week %}
+            {% if cell.in_month and cell.tasks %}
+              {% set agenda.found = true %}
+              <section class="calendar-agenda-day">
+                <h4>{{ cell.day.strftime('%d.%m.%Y') }}</h4>
+                {% for task in cell.tasks %}
+                  <a href="/tasks/{{ task.id }}">{{ task.title }}</a>
+                {% endfor %}
+              </section>
+            {% endif %}
+          {% endfor %}{% endfor %}
+          {% if not agenda.found %}<p class="muted">Keine offenen Termine in diesem Monat.</p>{% endif %}
+        </div>
+      </section>
+      {% endif %}

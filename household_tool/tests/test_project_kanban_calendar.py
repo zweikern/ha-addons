@@ -34,7 +34,9 @@ with TestClient(main.app) as client:
 
     kanban = client.get(f'/projects?project_id={project}&view=kanban')
     assert kanban.status_code == 200
-    assert 'Kanban' in kanban.text and 'Offen (3)' in kanban.text and 'In Arbeit (1)' in kanban.text
+    assert 'Board' in kanban.text
+    assert 'data-board-status="open" data-task-count="3"' in kanban.text
+    assert 'data-board-status="in_progress" data-task-count="1"' in kanban.text
 
     cal_dec = client.get(f'/projects?project_id={project}&view=calendar&month=2026-12')
     assert cal_dec.status_code == 200
@@ -47,7 +49,8 @@ with TestClient(main.app) as client:
     task = db.list_project_tasks(project, 'open')[0]['id']
     client.post(f'/tasks/{task}/status', data={'csrf':csrf,'project_id':project,'view':'kanban','status':'in_progress'})
     kanban = client.get(f'/projects?project_id={project}&view=kanban')
-    assert 'Offen (2)' in kanban.text and 'In Arbeit (2)' in kanban.text
+    assert 'data-board-status="open" data-task-count="2"' in kanban.text
+    assert 'data-board-status="in_progress" data-task-count="2"' in kanban.text
 '''], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

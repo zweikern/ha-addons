@@ -5,22 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Household Tool{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+    {% block head %}{% endblock %}
   </head>
-  <body>
+  <body class="{% block body_class %}{% endblock %}">
     <header class="topbar">
       <div class="container topbar-inner">
         <div class="brand">Household Tool</div>
         {% if user %}
           <nav class="nav">
-            <a href="/apps">Apps</a>
-            <a href="/projects">Projekte</a>
-            <a href="/my-tasks">Meine Aufgaben</a>
-            <a href="/templates">Vorlagen</a>
-            <a href="/files">File Sharing</a>
-            <a href="/music">Musik</a>
-            <a href="/account">Konto</a>
+            <a href="/apps" {% if request.url.path.startswith('/apps') %}aria-current="page"{% endif %}>Apps</a>
+            <a href="/projects" {% if request.url.path.startswith('/projects') or request.url.path.startswith('/tasks/') %}aria-current="page"{% endif %}>Projekte</a>
+            <a href="/my-tasks" {% if request.url.path.startswith('/my-tasks') %}aria-current="page"{% endif %}>Meine Aufgaben</a>
+            <a href="/templates" {% if request.url.path.startswith('/templates') %}aria-current="page"{% endif %}>Vorlagen</a>
+            <a href="/files" {% if request.url.path.startswith('/files') %}aria-current="page"{% endif %}>File Sharing</a>
+            <a href="/music" {% if request.url.path.startswith('/music') %}aria-current="page"{% endif %}>Musik</a>
+            <a href="/account" {% if request.url.path.startswith('/account') %}aria-current="page"{% endif %}>Konto</a>
             {% if user.role == 'admin' %}
-              <a href="/users">Benutzer</a>
+              <a href="/users" {% if request.url.path.startswith('/users') %}aria-current="page"{% endif %}>Benutzer</a>
             {% endif %}
             <a href="/logout">Logout ({{ user.username }})</a>
           </nav>
@@ -30,7 +31,7 @@
 
     <main class="container">
       {% if error %}
-        <div class="alert">Hinweis: {{ error }}</div>
+        <div class="alert" role="alert">{{ {'invalid_schedule': 'Bitte Start- und Enddatum gemeinsam angeben. Das Ende darf nicht vor dem Start liegen.', 'dependency_cycle': 'Diese Verknüpfung würde einen Kreis erzeugen. Bitte einen anderen Vorgänger wählen.', 'dependency_self_dependency': 'Eine Aufgabe kann nicht ihr eigener Vorgänger sein.', 'csrf': 'Die Sitzung ist abgelaufen. Bitte die Seite neu laden und erneut versuchen.'}.get(error, 'Hinweis: ' ~ error) }}</div>
       {% endif %}
       {% block content %}{% endblock %}
     </main>

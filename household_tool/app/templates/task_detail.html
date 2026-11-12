@@ -1,5 +1,8 @@
 {% extends "base.html" %}
+{% from 'partials/pm_ui.html' import icon %}
 {% block title %}{{ task.title }} | Household Tool{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', path='project-ui.css') }}?v=0.8.0">{% endblock %}
+{% block body_class %}project-ui{% endblock %}
 {% block content %}
 <div class="pm-workspace task-detail">
   <nav class="task-detail-nav">
@@ -8,7 +11,7 @@
 
   <header class="card project-header">
     <div>
-      <h2>{% if task.focus %}<span class="focus-dot" title="Fokus">★</span>{% endif %} {{ task.title }}</h2>
+      <h2>{% if task.focus %}<span class="pm-focus" title="Fokus">{{ icon('flag') }}</span>{% endif %} {{ task.title }}</h2>
       <p>{{ task.description or 'Keine Beschreibung.' }}</p>
     </div>
     <div class="project-header-meta">
@@ -30,80 +33,87 @@
     <div class="task-actions">
       {% if task.status != 'open' %}
         <form method="post" action="/tasks/{{ task.id }}/status">
-          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="task">
           <input type="hidden" name="project_id" value="{{ task.project_id }}">
           <input type="hidden" name="view" value="all">
           <input type="hidden" name="status" value="open">
-          <button type="submit" class="button-small">Offen</button>
+          <button type="submit" class="pm-button">Offen</button>
         </form>
       {% endif %}
       {% if task.status != 'in_progress' %}
         <form method="post" action="/tasks/{{ task.id }}/status">
-          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="task">
           <input type="hidden" name="project_id" value="{{ task.project_id }}">
           <input type="hidden" name="view" value="all">
           <input type="hidden" name="status" value="in_progress">
-          <button type="submit" class="button-small secondary">In Arbeit</button>
+          <button type="submit" class="pm-button pm-button-plain">In Arbeit</button>
         </form>
       {% endif %}
       {% if task.status != 'done' %}
         <form method="post" action="/tasks/{{ task.id }}/status">
-          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="task">
           <input type="hidden" name="project_id" value="{{ task.project_id }}">
           <input type="hidden" name="view" value="all">
           <input type="hidden" name="status" value="done">
-          <button type="submit" class="button-small done">Erledigt</button>
+          <button type="submit" class="pm-button">Erledigt</button>
         </form>
       {% endif %}
     </div>
 
-    {% if dependencies %}
-      <div class="dependency-hint">
-        <span class="muted">Blockiert durch:</span>
-        {% for dep in dependencies %}
-          <span class="chip {% if dep.blocking_status == 'done' %}chip-done{% elif dep.blocking_status == 'in_progress' %}chip-progress{% else %}chip-open{% endif %}">{{ dep.blocking_title }} ({{ dep.blocking_status }})</span>
-        {% endfor %}
-      </div>
-    {% endif %}
+
+  </section>
+
+  <section class="card pm-detail-planning">
+    <div class="pm-detail-section-head"><h3>{{ icon('timeline') }} Projektplanung</h3><a href="/projects?project_id={{ task.project_id }}&view=timeline&anchor={{ task.start_date or today }}">Im Projektplan öffnen {{ icon('arrow') }}</a></div>
+    <form method="post" action="/tasks/{{ task.id }}/schedule" class="pm-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="task">
+      <div class="pm-form-pair"><label>Startdatum<input type="date" name="start_date" value="{{ task.start_date or '' }}"></label><label>Enddatum<input type="date" name="end_date" value="{{ task.end_date or '' }}"></label></div>
+      <p class="pm-field-help">Kalendertage, inklusive Endtag. Die Deadline {{ task.deadline or '(nicht gesetzt)' }} ist davon unabhängig.</p>
+      <button class="pm-button" type="submit">Zeitraum speichern</button>
+    </form>
+    <h4>Abhängigkeiten <span class="pm-count">{{ dependencies|length }}</span></h4>
+    <p class="pm-field-help">Diese Aufgabe soll erst nach Abschluss ihrer Vorgänger beginnen. Konflikte erscheinen im Projektplan.</p>
+    <ul class="pm-dependency-list">{% for dep in dependencies %}<li><a href="/tasks/{{ dep.depends_on_task_id }}">{{ icon('arrow') }} {{ dep.blocking_title }}</a><form method="post" action="/tasks/{{ task.id }}/dependencies/{{ dep.id }}/remove"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="task"><button class="pm-icon-button" aria-label="Abhängigkeit entfernen: {{ dep.blocking_title }}" title="Abhängigkeit entfernen">{{ icon('close') }}</button></form></li>{% else %}<li class="pm-muted">Keine Vorgänger verknüpft.</li>{% endfor %}</ul>
+    {% if dependency_options %}<form class="pm-dependency-add" method="post" action="/tasks/{{ task.id }}/dependencies"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="task"><input type="hidden" name="project_id" value="{{ task.project_id }}"><label class="pm-sr-only" for="add-predecessor">Vorgänger</label><select name="depends_on_task_id" id="add-predecessor" required><option value="">Vorgänger auswählen …</option>{% for option in dependency_options %}<option value="{{ option.id }}">#{{ option.id }} · {{ option.title }}</option>{% endfor %}</select><button class="pm-button pm-button-plain">Verknüpfen</button></form>{% endif %}
   </section>
 
   <details class="card">
     <summary>Bearbeiten</summary>
     <form method="post" action="/tasks/{{ task.id }}/edit" class="form-grid compact-form">
-      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="task">
       <input type="hidden" name="project_id" value="{{ task.project_id }}">
       <input type="hidden" name="view" value="all">
 
-      <label>Titel</label>
-      <input name="title" value="{{ task.title }}" required>
+      <label for="edit-title">Titel</label>
+      <input id="edit-title" name="title" value="{{ task.title }}" required>
 
-      <label>Beschreibung</label>
-      <textarea name="description" rows="3">{{ task.description }}</textarea>
+      <label for="edit-description">Beschreibung</label>
+      <textarea id="edit-description" name="description" rows="3">{{ task.description }}</textarea>
 
-      <label>Status</label>
-      <select name="status">
+      <label for="edit-status">Status</label>
+      <select id="edit-status" name="status">
         <option value="open" {% if task.status == 'open' %}selected{% endif %}>offen</option>
         <option value="in_progress" {% if task.status == 'in_progress' %}selected{% endif %}>in Arbeit</option>
         <option value="done" {% if task.status == 'done' %}selected{% endif %}>erledigt</option>
       </select>
 
-      <label>Priorität</label>
-      <select name="priority">
+      <label for="edit-priority">Priorität</label>
+      <select id="edit-priority" name="priority">
         <option value="normal" {% if task.priority == 'normal' %}selected{% endif %}>normal</option>
         <option value="low" {% if task.priority == 'low' %}selected{% endif %}>niedrig</option>
         <option value="high" {% if task.priority == 'high' %}selected{% endif %}>hoch</option>
       </select>
 
-      <label>Wiederholung</label>
-      <select name="recurrence">
+      <label for="edit-recurrence">Wiederholung</label>
+      <select id="edit-recurrence" name="recurrence">
         <option value="" {% if not task.recurrence %}selected{% endif %}>keine</option>
         <option value="daily" {% if task.recurrence == 'daily' %}selected{% endif %}>täglich</option>
         <option value="weekly" {% if task.recurrence == 'weekly' %}selected{% endif %}>wöchentlich</option>
         <option value="monthly" {% if task.recurrence == 'monthly' %}selected{% endif %}>monatlich</option>
       </select>
 
-      <label>Meilenstein</label>
-      <select name="milestone_id">
+      <label for="edit-milestone_id">Meilenstein</label>
+      <select id="edit-milestone_id" name="milestone_id">
         <option value="" {% if not task.milestone_id %}selected{% endif %}>-</option>
         {% for m in milestones %}
           <option value="{{ m.id }}" {% if task.milestone_id == m.id %}selected{% endif %}>{{ m.name }}</option>
@@ -113,8 +123,8 @@
       <label>Deadline</label>
       <input type="date" name="deadline" value="{{ task.deadline or '' }}">
 
-      <label>Zuständig</label>
-      <select name="assignee_id">
+      <label for="edit-assignee_id">Zuständig</label>
+      <select id="edit-assignee_id" name="assignee_id">
         <option value="">-</option>
         {% for account in task_assignees %}
           <option value="{{ account.id }}" {% if task.assignee_id == account.id %}selected{% endif %}>{{ account.username }}</option>
@@ -122,7 +132,7 @@
       </select>
 
       <label class="inline-check"><input type="checkbox" name="focus" value="1" {% if task.focus %}checked{% endif %}> Fokus</label>
-      <button type="submit" class="button-small">Speichern</button>
+      <button type="submit" class="pm-button">Speichern</button>
     </form>
   </details>
 
@@ -133,10 +143,10 @@
         {% for item in checklist %}
           <li class="{% if item.done %}is-done{% endif %}">
             <form method="post" action="/checklist/{{ item.id }}/toggle" class="checklist-toggle">
-              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="task">
               <input type="hidden" name="project_id" value="{{ task.project_id }}">
               <input type="hidden" name="view" value="all">
-              <button type="submit" class="button-small secondary">{% if item.done %}✓{% else %}○{% endif %}</button>
+              <button type="submit" class="pm-button pm-button-plain">{% if item.done %}✓{% else %}○{% endif %}</button>
             </form>
             <span>{{ item.content }}</span>
           </li>
@@ -146,11 +156,11 @@
       <p class="muted">Noch keine Checklistenpunkte.</p>
     {% endif %}
     <form method="post" action="/tasks/{{ task.id }}/checklist" class="comment-form">
-      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="task">
       <input type="hidden" name="project_id" value="{{ task.project_id }}">
       <input type="hidden" name="view" value="all">
       <input type="text" name="content" placeholder="Neuer Punkt …" required>
-      <button type="submit" class="button-small secondary">Hinzufügen</button>
+      <button type="submit" class="pm-button pm-button-plain">Hinzufügen</button>
     </form>
   </details>
 
@@ -169,11 +179,11 @@
       <p class="muted">Noch keine Kommentare.</p>
     {% endif %}
     <form method="post" action="/tasks/{{ task.id }}/comments" class="comment-form">
-      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="task">
       <input type="hidden" name="project_id" value="{{ task.project_id }}">
       <input type="hidden" name="view" value="all">
       <textarea name="content" rows="2" placeholder="Kommentar schreiben …" required></textarea>
-      <button type="submit" class="button-small secondary">Kommentieren</button>
+      <button type="submit" class="pm-button pm-button-plain">Kommentieren</button>
     </form>
   </details>
 
@@ -189,11 +199,11 @@
       <p class="muted">Keine Anhänge.</p>
     {% endif %}
     <form method="post" action="/tasks/{{ task.id }}/attachments" enctype="multipart/form-data" class="attachment-upload">
-      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="task">
       <input type="hidden" name="project_id" value="{{ task.project_id }}">
       <input type="hidden" name="view" value="all">
       <input type="file" name="file" required>
-      <button type="submit" class="button-small secondary">Upload</button>
+      <button type="submit" class="pm-button pm-button-plain">Upload</button>
     </form>
     <div class="muted">Max {{ max_attachment_mb }} MB</div>
   </details>
@@ -206,9 +216,9 @@
           <li>
             <span class="muted activity-meta">{{ e.actor_current if e.actor_current else e.actor_name }}{% if not e.actor_current %} (ehemalig){% endif %} · {{ e.created_at }}</span>
             <span class="activity-type">
-              {% if e.event_type == 'task_created' %}Aufgabe angelegt{% elif e.event_type == 'status_changed' %}Status geändert{% elif e.event_type == 'task_reopened' %}Wiedergeöffnet{% elif e.event_type == 'title_changed' %}Titel geändert{% elif e.event_type == 'description_changed' %}Beschreibung geändert{% elif e.event_type == 'deadline_changed' %}Deadline geändert{% elif e.event_type == 'focus_changed' %}Fokus geändert{% elif e.event_type == 'priority_changed' %}Priorität geändert{% elif e.event_type == 'recurrence_changed' %}Wiederholung geändert{% elif e.event_type == 'milestone_changed' %}Meilenstein geändert{% elif e.event_type == 'assignee_changed' %}Zuständigkeit geändert{% elif e.event_type == 'attachment_added' %}Anhang hinzugefügt{% else %}{{ e.event_type }}{% endif %}
+              {% if e.event_type == 'task_created' %}Aufgabe angelegt{% elif e.event_type == 'status_changed' %}Status geändert{% elif e.event_type == 'task_reopened' %}Wiedergeöffnet{% elif e.event_type == 'title_changed' %}Titel geändert{% elif e.event_type == 'description_changed' %}Beschreibung geändert{% elif e.event_type == 'deadline_changed' %}Deadline geändert{% elif e.event_type == 'focus_changed' %}Fokus geändert{% elif e.event_type == 'priority_changed' %}Priorität geändert{% elif e.event_type == 'recurrence_changed' %}Wiederholung geändert{% elif e.event_type == 'milestone_changed' %}Meilenstein geändert{% elif e.event_type == 'assignee_changed' %}Zuständigkeit geändert{% elif e.event_type == 'schedule_changed' %}Zeitraum geändert{% elif e.event_type == 'dependency_added' %}Vorgänger verknüpft{% elif e.event_type == 'dependency_removed' %}Vorgänger entfernt{% elif e.event_type == 'attachment_added' %}Anhang hinzugefügt{% else %}{{ e.event_type }}{% endif %}
             </span>
-            {% if e.event_type in ['status_changed', 'task_reopened', 'title_changed', 'description_changed', 'deadline_changed', 'assignee_changed'] %}
+            {% if e.event_type in ['status_changed', 'task_reopened', 'title_changed', 'description_changed', 'deadline_changed', 'assignee_changed', 'schedule_changed'] %}
               <span class="activity-values">{{ e.old_value or '-' }} → {{ e.new_value or '-' }}</span>
             {% elif e.event_type == 'focus_changed' %}
               <span class="activity-values">{{ 'Fokus an' if e.new_value == '1' else 'Fokus aus' }}</span>
@@ -223,4 +233,5 @@
     {% endif %}
   </details>
 </div>
+<script src="{{ url_for('static', path='projects.js') }}?v=0.8.0" defer></script>
 {% endblock %}

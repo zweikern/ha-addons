@@ -1,6 +1,6 @@
 name: Household Tool
 slug: household_tool
-version: 0.7.0
+version: 0.8.0
 description: Internes Haushalts-Intranet mit Projekte-App und File-Sharing.
 startup: services
 boot: auto

@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Meine Aufgaben | Household Tool{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', path='project-ui.css') }}?v=0.8.0">{% endblock %}
+{% block body_class %}project-ui{% endblock %}
 {% block content %}
 <div class="pm-workspace my-tasks">
   <header class="card project-header">

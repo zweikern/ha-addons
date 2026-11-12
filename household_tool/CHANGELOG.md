@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0 - 2026-11-12
+
+- Neue Projektoberflaeche mit kompakter Liste, Board und zentralen Dialogen.
+- Gantt-Projektplan mit Start-/Enddatum, drei Zeitskalen und Abhaengigkeitspfeilen.
+- Planungswarnungen bei Termin- und Deadline-Konflikten; keine automatische Verschiebung.
+- Meilensteine bearbeiten/entfernen und Aufgabenabhaengigkeiten aufloesen.
+- Projektplaene drucken/als PDF speichern, mit lesbaren Texten und skaliertem Zeitstrahl.
+- Aufgabenlisten laden nur Vorschauen ihrer sichtbaren Aufgaben statt ganzer Aktivitaeten.
+- 67 Tests, lokale Desktop-/Smartphone- und Druckabnahme.
+
+
 ## 0.7.0 - 2026-11-12
 
 - Projekte: Kommentare, Aktivitaeten, Prioritaeten und projektuebergreifende Aufgaben.

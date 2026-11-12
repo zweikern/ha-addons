@@ -325,6 +325,10 @@ def init_db() -> None:
         if not _has_column(conn, 'tasks', 'milestone_id'):
             conn.execute('ALTER TABLE tasks ADD COLUMN milestone_id INTEGER')
 
+        for column in ('start_date', 'end_date'):
+            if not _has_column(conn, 'tasks', column):
+                conn.execute(f'ALTER TABLE tasks ADD COLUMN {column} TEXT')
+
         # Indizes auf Spaet-Migrationsspalten erst nach den ALTER-Anweisungen.
         conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_project_deadline ON tasks(project_id, deadline)')
 
@@ -772,8 +776,11 @@ def create_task(
     milestone_id: int | None = None,
     actor_id: int | None = None,
     actor_name: str = '',
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> int:
     deadline = normalize_deadline(deadline)
+    start_date, end_date = normalize_schedule(start_date, end_date)
     if priority not in {'low', 'normal', 'high'}:
         priority = 'normal'
     if recurrence not in {'daily', 'weekly', 'monthly'}:
@@ -796,7 +803,8 @@ def create_task(
                 ''',
                 (project_id, title, description, status, 1 if focus else 0, priority, recurrence, milestone_id, assignee_id),
             )
-        conn.execute('UPDATE tasks SET deadline = ? WHERE id = ?', (deadline, cur.lastrowid))
+        conn.execute('UPDATE tasks SET deadline = ?, start_date = ?, end_date = ? WHERE id = ?',
+                     (deadline, start_date, end_date, cur.lastrowid))
         if actor_id is not None:
             _record_event(conn, int(cur.lastrowid), actor_id, actor_name, 'task_created', None, status)
         if status == 'done':
@@ -806,6 +814,65 @@ def create_task(
 
 def normalize_deadline(value: str | None) -> str | None:
     return date.fromisoformat(value).isoformat() if value else None
+
+
+def normalize_schedule(start: str | None, end: str | None) -> tuple[str | None, str | None]:
+    start, end = normalize_deadline(start), normalize_deadline(end)
+    if bool(start) != bool(end) or (start and start > end):
+        raise ValueError('invalid_schedule')
+    return start, end
+
+
+def update_task_schedule(task_id: int, user_id: int, start: str | None, end: str | None) -> bool:
+    start, end = normalize_schedule(start, end)
+    with get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        task = conn.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
+        if not task or not _is_project_member(conn, task['project_id'], user_id):
+            return False
+        if task['start_date'] != start or task['end_date'] != end:
+            actor = _username(conn, user_id)
+            conn.execute('UPDATE tasks SET start_date=?, end_date=? WHERE id=?', (start, end, task_id))
+            old = f"{task['start_date'] or '-'} / {task['end_date'] or '-'}"
+            new = f"{start or '-'} / {end or '-'}"
+            _record_event(conn, task_id, user_id, actor, 'schedule_changed', old, new)
+        return True
+
+
+def remove_task_dependency(task_id: int, dependency_id: int, user_id: int) -> bool:
+    with get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        task = conn.execute('SELECT project_id FROM tasks WHERE id=?', (task_id,)).fetchone()
+        if not task or not _is_project_member(conn, task['project_id'], user_id):
+            return False
+        cursor = conn.execute('DELETE FROM task_dependencies WHERE id=? AND task_id=?',
+                              (dependency_id, task_id))
+        if cursor.rowcount:
+            _record_event(conn, task_id, user_id, _username(conn, user_id),
+                          'dependency_removed', str(dependency_id), None)
+        return bool(cursor.rowcount)
+
+
+def task_list_previews(project_id: int, task_ids: list[int]) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
+    """Only fetch metadata for visible rows, plus the two latest comments each."""
+    if not task_ids:
+        return [], []
+    placeholders = ','.join('?' for _ in task_ids)
+    params = (project_id, *task_ids)
+    with get_connection() as conn:
+        attachments = conn.execute(f'''
+            SELECT a.id, a.task_id, a.filename, a.size, a.mime FROM task_attachments a
+            JOIN tasks t ON t.id=a.task_id
+            WHERE t.project_id=? AND t.id IN ({placeholders}) ORDER BY a.id
+        ''', params).fetchall()
+        comments = conn.execute(f'''
+            SELECT * FROM (
+                SELECT c.*, ROW_NUMBER() OVER (PARTITION BY c.task_id ORDER BY c.id DESC) AS position
+                FROM task_comments c JOIN tasks t ON t.id=c.task_id
+                WHERE t.project_id=? AND t.id IN ({placeholders})
+            ) WHERE position <= 2 ORDER BY id
+        ''', params).fetchall()
+        return attachments, comments
 
 
 def project_today() -> date:
@@ -851,6 +918,8 @@ _TASK_SELECT = '''
             t.title,
             t.description,
             t.deadline,
+            t.start_date,
+            t.end_date,
             t.status,
             t.focus,
             t.priority,
@@ -1433,7 +1502,7 @@ def add_task_dependency(task_id: int, depends_on_task_id: int, user_id: int) -> 
         if _reaches(conn, depends_on_task_id, task_id):
             return 'cycle'
 
-        conn.execute(
+        cursor = conn.execute(
             '''
             INSERT INTO task_dependencies (task_id, depends_on_task_id)
             VALUES (?, ?)
@@ -1441,6 +1510,9 @@ def add_task_dependency(task_id: int, depends_on_task_id: int, user_id: int) -> 
             ''',
             (task_id, depends_on_task_id),
         )
+        if cursor.rowcount:
+            _record_event(conn, task_id, user_id, _username(conn, user_id),
+                          'dependency_added', None, str(depends_on_task_id))
         return 'ok'
 
 
@@ -1503,6 +1575,8 @@ def get_task_detail_if_accessible(task_id: int, user_id: int) -> sqlite3.Row | N
                 t.milestone_id,
                 m.name AS milestone_name,
                 t.deadline,
+                t.start_date,
+                t.end_date,
                 t.created_at,
                 t.completed_at,
                 t.assignee_id,
@@ -2570,3 +2644,28 @@ def music_stats() -> dict[str, int]:
             conn.execute('SELECT COUNT(*) FROM music_tracks WHERE favorite = 1').fetchone()[0] or 0
         )
     return {'total': total, 'favorites': favorites}
+
+
+def edit_project_milestone(project_id: int, milestone_id: int, name: str, due_date: str | None,
+                           actor_id: int, delete: bool = False) -> bool:
+    """Caller checks project management rights; keep task references consistent."""
+    due_date = normalize_deadline(due_date)
+    with get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        old = conn.execute('SELECT * FROM milestones WHERE id=? AND project_id=?',
+                            (milestone_id, project_id)).fetchone()
+        if not old:
+            return False
+        if delete:
+            affected = conn.execute('SELECT id FROM tasks WHERE project_id=? AND milestone_id=?',
+                                    (project_id, milestone_id)).fetchall()
+            conn.execute('UPDATE tasks SET milestone_id=NULL WHERE project_id=? AND milestone_id=?',
+                         (project_id, milestone_id))
+            for task in affected:
+                _record_event(conn, task['id'], actor_id, _username(conn, actor_id),
+                              'milestone_changed', str(milestone_id), None)
+            conn.execute('DELETE FROM milestones WHERE id=? AND project_id=?', (milestone_id, project_id))
+        else:
+            conn.execute('UPDATE milestones SET name=?, due_date=? WHERE id=? AND project_id=?',
+                         (name, due_date, milestone_id, project_id))
+        return True

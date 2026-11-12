@@ -1,0 +1,28 @@
+{% macro icon(name) -%}
+<svg class="pm-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+{% if name == 'plus' %}<path d="M12 5v14M5 12h14"/>
+{% elif name == 'list' %}<path d="M9 6h12M9 12h12M9 18h12M3 6h.01M3 12h.01M3 18h.01"/>
+{% elif name == 'board' %}<rect x="3" y="4" width="7" height="16" rx="2"/><rect x="14" y="4" width="7" height="11" rx="2"/>
+{% elif name == 'calendar' %}<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 11h18M8 15h2M14 15h2"/>
+{% elif name == 'timeline' %}<path d="M4 3v18M4 8h9M9 13h11M15 18h5"/><path d="M13 7v4h-4v3"/>
+{% elif name == 'folder' %}<path d="M3 7V5a2 2 0 0 1 2-2h5l3 4h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/>
+{% elif name == 'settings' %}<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>
+{% elif name == 'arrow' %}<path d="m9 5 7 7-7 7"/>
+{% elif name == 'check' %}<path d="m5 12 4 4L19 6"/>
+{% elif name == 'clock' %}<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
+{% elif name == 'flag' %}<path d="M5 21V3l14 4-14 5"/>
+{% elif name == 'print' %}<path d="M7 8V3h10v5M7 17H4V9h16v8h-3M7 14h10v7H7Z"/>
+{% elif name == 'search' %}<circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/>
+{% elif name == 'close' %}<path d="m6 6 12 12M6 18 18 6"/>
+{% else %}<circle cx="12" cy="12" r="8"/>{% endif %}
+</svg>
+{%- endmacro %}
+{% macro status(task) %}<span class="pm-status pm-status-{{ task.status }}"><i></i>{{ {'open':'Offen','in_progress':'In Arbeit','done':'Erledigt'}[task.status] }}</span>{% endmacro %}
+{% macro avatar(name) %}<span class="pm-avatar" aria-hidden="true">{{ (name or '?')[:2]|upper }}</span>{% endmacro %}
+{% macro status_action(task, project_id, csrf, view) %}
+<form method="post" action="/tasks/{{ task.id }}/status" class="pm-status-action">
+ <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="project_id" value="{{ project_id }}"><input type="hidden" name="view" value="{{ view }}">
+ <input type="hidden" name="status" value="{{ 'open' if task.status == 'done' else 'done' }}">
+ <button class="pm-icon-button" title="{{ 'Wieder öffnen' if task.status == 'done' else 'Abschließen' }}" aria-label="{{ 'Wieder öffnen' if task.status == 'done' else 'Abschließen' }}: {{ task.title }}">{{ icon('clock' if task.status == 'done' else 'check') }}</button>
+</form>
+{% endmacro %}

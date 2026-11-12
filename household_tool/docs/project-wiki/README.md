@@ -8,7 +8,7 @@ gehostetes GitHub-Wiki wurde nicht geprueft.
 ## Orientierung
 
 - `repository.yaml`: Home-Assistant-Repository-Metadaten.
-- `household_tool/`: Household-Plattform, Port 8099, Version 0.7.0.
+- `household_tool/`: Household-Plattform, Port 8099, Version 0.8.0.
 - `downtime/`: separates Add-on fuer Ausfallprotokollierung. Eigener Entwicklungsbereich.
 - [Projekte: Produkt, Architektur und Daten](projects.md)
 - [Entwicklung, Tests und Betrieb](development.md)
@@ -50,3 +50,6 @@ Neu in 0.7.0 (Abschlussbericht: [Release-Abnahme](release-0.7.0.md)): Kommentare
 Aktivitaetsverlauf, "Meine Aufgaben" mit Prioritaeten, Kanban/Kalender,
 HA-Erinnerungen (standardmaessig deaktiviert), Wiederholungen/Checklisten/Vorlagen,
 Meilensteine/Abhaengigkeiten sowie Pagination und SQL-Aggregate.
+
+Neu in 0.8.0: neue Projektoberflaeche und Gantt-Projektplaene.
+[Bedienung, Architektur und Release-Abnahme](release-0.8.0.md).

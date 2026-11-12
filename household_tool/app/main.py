@@ -28,6 +28,11 @@ from db import (
     add_project_member,
     add_task_checklist_item,
     add_task_dependency,
+    normalize_schedule,
+    update_task_schedule,
+    remove_task_dependency,
+    edit_project_milestone,
+    task_list_previews,
     create_attachment,
     create_fs_file,
     create_milestone,
@@ -102,6 +107,7 @@ from db import (
 from models import MusicTrackIngest, music_track_url
 import db
 import reminders
+from planning import build_plan
 
 DATA_DIR = Path(os.environ.get('HOUSEHOLD_DATA_DIR', '/data'))
 OPTIONS_PATH = DATA_DIR / 'options.json'
@@ -115,7 +121,7 @@ VALID_MEMBER_ROLES = {'member', 'manager'}
 VALID_TASK_STATUS = {'open', 'in_progress', 'done'}
 VALID_PRIORITIES = {'low', 'normal', 'high'}
 VALID_RECURRENCES = {'daily', 'weekly', 'monthly'}
-VALID_PROJECT_VIEWS = {'all', 'open', 'done', 'history', 'focus', 'today', 'tomorrow', 'overdue', 'in_progress', 'kanban', 'calendar'}
+VALID_PROJECT_VIEWS = {'all', 'open', 'done', 'history', 'focus', 'today', 'tomorrow', 'overdue', 'in_progress', 'kanban', 'calendar', 'timeline'}
 VALID_MY_TASK_VIEWS = {'all', 'open', 'in_progress', 'focus', 'today', 'tomorrow', 'overdue', 'history'}
 MIN_PASSWORD_LENGTH = 8
 
@@ -215,6 +221,86 @@ def projects_url(
     if error:
         params['error'] = error
     return '/projects' + (f"?{urlencode(params)}" if params else '')
+
+
+def task_return_url(task_id: int, return_to: str, project_id: int, view: str = 'all',
+                    error: str | None = None) -> str:
+    if return_to == 'task':
+        return f'/tasks/{task_id}' + (f'?{urlencode({"error": error})}' if error else '')
+    return projects_url(project_id, view, error)
+
+
+@app.post('/tasks/{task_id}/schedule')
+def schedule_task_submit(request: Request, task_id: int, csrf: str = Form(...),
+                         start_date: str = Form(default=''), end_date: str = Form(default=''),
+                         return_to: str = Form(default='task'), anchor: str = Form(default=''),
+                         scale: str = Form(default='week')):
+    user, response = require_login(request)
+    if response:
+        return response
+    task = get_task_detail_if_accessible(task_id, int(user['id']))
+    if not task:
+        raise HTTPException(status_code=404, detail='Aufgabe nicht gefunden')
+    destination = f'/tasks/{task_id}'
+    if return_to == 'timeline':
+        params = {'project_id': task['project_id'], 'view': 'timeline', 'scale': scale}
+        if anchor:
+            params['anchor'] = anchor
+        destination = '/projects?' + urlencode(params)
+    error = None
+    if not validate_csrf(request, csrf):
+        error = 'csrf'
+    else:
+        try:
+            if not update_task_schedule(task_id, int(user['id']), start_date or None, end_date or None):
+                raise HTTPException(status_code=404, detail='Aufgabe nicht gefunden')
+        except ValueError:
+            error = 'invalid_schedule'
+    if error:
+        destination += ('&' if '?' in destination else '?') + urlencode({'error': error})
+    return redirect(destination)
+
+
+@app.post('/tasks/{task_id}/dependencies/{dependency_id}/remove')
+def remove_dependency_submit(request: Request, task_id: int, dependency_id: int, csrf: str = Form(...)):
+    user, response = require_login(request)
+    if response:
+        return response
+    if not get_task_if_accessible(task_id, int(user['id'])):
+        raise HTTPException(status_code=404, detail='Aufgabe nicht gefunden')
+    if not validate_csrf(request, csrf):
+        return redirect(f'/tasks/{task_id}?error=csrf')
+    if not remove_task_dependency(task_id, dependency_id, int(user['id'])):
+        raise HTTPException(status_code=404, detail='Abhängigkeit nicht gefunden')
+    return redirect(f'/tasks/{task_id}')
+
+
+@app.post('/projects/{project_id}/milestones/{milestone_id}/edit')
+def edit_milestone_submit(request: Request, project_id: int, milestone_id: int,
+                          csrf: str = Form(...), name: str = Form(default=''),
+                          due_date: str = Form(default=''), action: str = Form(default='save'),
+                          view: str = Form(default='timeline')):
+    user, response = require_login(request)
+    if response:
+        return response
+    project = get_accessible_project(project_id, int(user['id']))
+    if not project:
+        raise HTTPException(status_code=404, detail='Projekt nicht gefunden')
+    if not can_manage_project(user, project):
+        raise HTTPException(status_code=403, detail='Projektverwaltung erforderlich')
+    destination = projects_url(project_id, normalize_view(view))
+    if not validate_csrf(request, csrf):
+        return redirect(projects_url(project_id, normalize_view(view), 'csrf'))
+    if action not in {'save', 'delete'} or (action == 'save' and not name.strip()):
+        return redirect(projects_url(project_id, normalize_view(view), 'missing_milestone_name'))
+    try:
+        changed = edit_project_milestone(project_id, milestone_id, name.strip(), due_date or None,
+                                         int(user['id']), delete=action == 'delete')
+    except ValueError:
+        return redirect(projects_url(project_id, normalize_view(view), 'invalid_milestone_date'))
+    if not changed:
+        raise HTTPException(status_code=404, detail='Meilenstein nicht gefunden')
+    return redirect(destination)
 
 
 def can_manage_project(user, project) -> bool:
@@ -692,6 +778,8 @@ def projects_page(
     month: str | None = None,
     page: int = 1,
     q: str = '',
+    anchor: str | None = None,
+    scale: str = 'week',
 ):
     user, response = require_login(request)
     if response:
@@ -713,6 +801,7 @@ def projects_page(
         active_project = get_accessible_project(first_project_id, user_id)
         project_id = first_project_id
 
+    plan = None
     tasks = []
     members = []
     task_assignees = []
@@ -742,8 +831,8 @@ def projects_page(
 
     if active_project:
         project_id = int(active_project['id'])
-        if project_view == 'kanban':
-            tasks = list_project_tasks(project_id, 'kanban')
+        if project_view in {'kanban', 'timeline'}:
+            tasks = list_project_tasks(project_id, 'all', q=q)
             total_tasks = len(tasks)
         elif project_view == 'calendar':
             tasks = []
@@ -784,23 +873,28 @@ def projects_page(
                 continue
             parent_options_edit.append(candidate)
 
-        for attachment in list_project_attachments(project_id):
-            attachments_by_task[int(attachment['task_id'])].append(attachment)
-        for comment in list_project_comments(project_id):
-            comments_by_task[int(comment['task_id'])].append(comment)
-        for event in list_project_events(project_id):
-            events_by_task[int(event['task_id'])].append(event)
-        for item in list_project_checklist_items(project_id):
-            checklist_items_by_task[int(item['task_id'])].append(item)
+        if project_view not in {'timeline', 'calendar', 'kanban'}:
+            visible_ids = [int(task['id']) for task in tasks]
+            preview_attachments, preview_comments = task_list_previews(project_id, visible_ids)
+            for attachment in preview_attachments:
+                attachments_by_task[int(attachment['task_id'])].append(attachment)
+            for comment in preview_comments:
+                comments_by_task[int(comment['task_id'])].append(comment)
         milestones = list_project_milestones(project_id)
-        dependency_options = list_project_tasks(project_id, 'all')
-        for dependency in list_project_dependencies(project_id):
+        project_dependencies = list_project_dependencies(project_id)
+        if project_view == 'timeline':
+            try:
+                plan = build_plan(tasks, project_dependencies, milestones, project_today(), anchor, scale)
+            except ValueError:
+                raise HTTPException(status_code=400, detail='Ungültiges Startdatum für den Zeitstrahl')
+        for dependency in project_dependencies:
             dependencies_by_task[int(dependency['task_id'])].append(dependency)
 
     return templates.TemplateResponse(
         request,
         'projects_app.html',
         {
+            'plan': plan,
             'user': user,
             'projects': project_nav,
             'active_project': active_project,
@@ -867,7 +961,7 @@ def task_detail_page(request: Request, task_id: int):
     comments = list_task_comments(task_id)
     events = list_task_events(task_id)
     checklist = list_task_checklist_items(task_id)
-    attachments = [a for a in list_project_attachments(project_id) if int(a['task_id']) == task_id]
+    attachments, _ = task_list_previews(project_id, [task_id])
     dependencies = [d for d in list_project_dependencies(project_id) if int(d['task_id']) == task_id]
 
     return templates.TemplateResponse(
@@ -883,6 +977,8 @@ def task_detail_page(request: Request, task_id: int):
             'checklist': checklist,
             'attachments': attachments,
             'dependencies': dependencies,
+            'dependency_options': [t for t in list_project_tasks(project_id) if int(t['id']) != task_id],
+            'error': request.query_params.get('error'),
             'today': project_today().isoformat(),
             'max_attachment_mb': MAX_ATTACHMENT_BYTES // (1024 * 1024),
             'csrf_token': csrf_token(request),
@@ -1125,6 +1221,8 @@ def create_task_submit(
     assignee_id: str = Form(default=''),
     focus: str = Form(default='0'),
     deadline: str = Form(default=''),
+    start_date: str = Form(default=''),
+    end_date: str = Form(default=''),
     priority: str = Form(default='normal'),
     recurrence: str = Form(default=''),
     milestone_id: str = Form(default=''),
@@ -1185,6 +1283,11 @@ def create_task_submit(
     except ValueError:
         return redirect(projects_url(project_id, project_view, 'invalid_deadline'))
 
+    try:
+        planned_start, planned_end = normalize_schedule(start_date, end_date)
+    except ValueError:
+        return redirect(projects_url(project_id, project_view, 'invalid_schedule'))
+
     create_task(
         project_id=project_id,
         title=task_title,
@@ -1198,6 +1301,8 @@ def create_task_submit(
         milestone_id=milestone,
         actor_id=int(user['id']),
         actor_name=user['username'],
+        start_date=planned_start,
+        end_date=planned_end,
     )
     return redirect(projects_url(project_id, project_view))
 
@@ -1209,6 +1314,7 @@ def update_task_status_submit(
     status: str = Form(...),
     project_id: int = Form(...),
     view: str = Form(default='all'),
+    return_to: str = Form(default='project'),
     csrf: str = Form(...),
 ):
     user, response = require_login(request)
@@ -1217,16 +1323,16 @@ def update_task_status_submit(
 
     project_view = normalize_view(view)
     if not validate_csrf(request, csrf):
-        return redirect(projects_url(project_id, project_view, 'csrf'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'csrf'))
 
     if status not in VALID_TASK_STATUS:
-        return redirect(projects_url(project_id, project_view, 'invalid_status'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'invalid_status'))
 
     updated_project_id = update_task_status_if_accessible(task_id, int(user['id']), status, user['username'])
     if updated_project_id is None:
-        return redirect(projects_url(project_id, project_view, 'task_not_found'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'task_not_found'))
 
-    return redirect(projects_url(updated_project_id, project_view))
+    return redirect(task_return_url(task_id, return_to, updated_project_id, project_view))
 
 
 @app.post('/tasks/{task_id}/edit')
@@ -1244,6 +1350,7 @@ def edit_task_submit(
     milestone_id: str = Form(default=''),
     project_id: int = Form(...),
     view: str = Form(default='all'),
+    return_to: str = Form(default='project'),
     csrf: str = Form(...),
 ):
     user, response = require_login(request)
@@ -1252,25 +1359,25 @@ def edit_task_submit(
 
     project_view = normalize_view(view)
     if not validate_csrf(request, csrf):
-        return redirect(projects_url(project_id, project_view, 'csrf'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'csrf'))
 
     task_title = title.strip()
     if not task_title:
-        return redirect(projects_url(project_id, project_view, 'missing_title'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'missing_title'))
 
     if status not in VALID_TASK_STATUS:
-        return redirect(projects_url(project_id, project_view, 'invalid_status'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'invalid_status'))
 
     if priority not in VALID_PRIORITIES:
-        return redirect(projects_url(project_id, project_view, 'invalid_priority'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'invalid_priority'))
 
     recurrence_value = recurrence.strip() or None
     if recurrence_value and recurrence_value not in VALID_RECURRENCES:
-        return redirect(projects_url(project_id, project_view, 'invalid_recurrence'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'invalid_recurrence'))
 
     task = get_task_if_accessible(task_id, int(user['id']))
     if not task:
-        return redirect(projects_url(project_id, project_view, 'task_not_found'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'task_not_found'))
 
     actual_project_id = int(task['project_id'])
     member_ids = {int(member['id']) for member in list_project_members(actual_project_id)}
@@ -1281,10 +1388,10 @@ def edit_task_submit(
         try:
             milestone = int(milestone_value)
         except ValueError:
-            return redirect(projects_url(actual_project_id, project_view, 'invalid_milestone'))
+            return redirect(task_return_url(task_id, return_to, actual_project_id, project_view, 'invalid_milestone'))
         valid_milestone_ids = {int(m['id']) for m in list_project_milestones(actual_project_id)}
         if milestone not in valid_milestone_ids:
-            return redirect(projects_url(actual_project_id, project_view, 'invalid_milestone'))
+            return redirect(task_return_url(task_id, return_to, actual_project_id, project_view, 'invalid_milestone'))
 
     assignee: int | None = None
     assignee_value = assignee_id.strip()
@@ -1292,14 +1399,14 @@ def edit_task_submit(
         try:
             assignee = int(assignee_value)
         except ValueError:
-            return redirect(projects_url(actual_project_id, project_view, 'invalid_assignee'))
+            return redirect(task_return_url(task_id, return_to, actual_project_id, project_view, 'invalid_assignee'))
         if assignee not in member_ids:
-            return redirect(projects_url(actual_project_id, project_view, 'assignee_not_member'))
+            return redirect(task_return_url(task_id, return_to, actual_project_id, project_view, 'assignee_not_member'))
 
     try:
         deadline_value = normalize_deadline(deadline)
     except ValueError:
-        return redirect(projects_url(actual_project_id, project_view, 'invalid_deadline'))
+        return redirect(task_return_url(task_id, return_to, actual_project_id, project_view, 'invalid_deadline'))
 
     updated_project_id = update_task_if_accessible(
         task_id=task_id,
@@ -1316,9 +1423,9 @@ def edit_task_submit(
         actor_name=user['username'],
     )
     if updated_project_id is None:
-        return redirect(projects_url(project_id, project_view, 'task_not_found'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'task_not_found'))
 
-    return redirect(projects_url(updated_project_id, project_view))
+    return redirect(task_return_url(task_id, return_to, updated_project_id, project_view))
 
 
 @app.post('/projects/{project_id}/milestones')
@@ -1365,6 +1472,7 @@ def add_task_dependency_submit(
     depends_on_task_id: int = Form(...),
     project_id: int = Form(...),
     view: str = Form(default='all'),
+    return_to: str = Form(default='project'),
     csrf: str = Form(...),
 ):
     user, response = require_login(request)
@@ -1373,13 +1481,13 @@ def add_task_dependency_submit(
 
     project_view = normalize_view(view)
     if not validate_csrf(request, csrf):
-        return redirect(projects_url(project_id, project_view, 'csrf'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'csrf'))
 
     result = add_task_dependency(task_id, depends_on_task_id, int(user['id']))
     if result != 'ok':
-        return redirect(projects_url(project_id, project_view, f'dependency_{result}'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, f'dependency_{result}'))
 
-    return redirect(projects_url(project_id, project_view))
+    return redirect(task_return_url(task_id, return_to, project_id, project_view))
 
 
 @app.post('/tasks/{task_id}/comments')
@@ -1389,6 +1497,7 @@ def create_task_comment_submit(
     content: str = Form(...),
     project_id: int = Form(...),
     view: str = Form(default='all'),
+    return_to: str = Form(default='project'),
     csrf: str = Form(...),
 ):
     user, response = require_login(request)
@@ -1397,15 +1506,15 @@ def create_task_comment_submit(
 
     project_view = normalize_view(view)
     if not validate_csrf(request, csrf):
-        return redirect(projects_url(project_id, project_view, 'csrf'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'csrf'))
 
     task = get_task_if_accessible(task_id, int(user['id']))
     if not task:
-        return redirect(projects_url(project_id, project_view, 'task_not_found'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'task_not_found'))
 
     comment = content.strip()
     if not comment:
-        return redirect(projects_url(int(task['project_id']), project_view, 'missing_comment'))
+        return redirect(task_return_url(task_id, return_to, int(task['project_id']), project_view, 'missing_comment'))
 
     create_task_comment(
         task_id=task_id,
@@ -1413,7 +1522,7 @@ def create_task_comment_submit(
         author_name=user['username'],
         content=comment,
     )
-    return redirect(projects_url(int(task['project_id']), project_view))
+    return redirect(task_return_url(task_id, return_to, int(task['project_id']), project_view))
 
 
 @app.post('/tasks/{task_id}/checklist')
@@ -1423,6 +1532,7 @@ def create_checklist_item_submit(
     content: str = Form(...),
     project_id: int = Form(...),
     view: str = Form(default='all'),
+    return_to: str = Form(default='project'),
     csrf: str = Form(...),
 ):
     user, response = require_login(request)
@@ -1431,18 +1541,18 @@ def create_checklist_item_submit(
 
     project_view = normalize_view(view)
     if not validate_csrf(request, csrf):
-        return redirect(projects_url(project_id, project_view, 'csrf'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'csrf'))
 
     task = get_task_if_accessible(task_id, int(user['id']))
     if not task:
-        return redirect(projects_url(project_id, project_view, 'task_not_found'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'task_not_found'))
 
     item_content = content.strip()
     if not item_content:
-        return redirect(projects_url(int(task['project_id']), project_view, 'missing_checklist_item'))
+        return redirect(task_return_url(task_id, return_to, int(task['project_id']), project_view, 'missing_checklist_item'))
 
     add_task_checklist_item(task_id, item_content)
-    return redirect(projects_url(int(task['project_id']), project_view))
+    return redirect(task_return_url(task_id, return_to, int(task['project_id']), project_view))
 
 
 @app.post('/checklist/{item_id}/toggle')
@@ -1451,6 +1561,7 @@ def toggle_checklist_item_submit(
     item_id: int,
     project_id: int = Form(...),
     view: str = Form(default='all'),
+    return_to: str = Form(default='project'),
     csrf: str = Form(...),
 ):
     user, response = require_login(request)
@@ -1481,7 +1592,7 @@ def toggle_checklist_item_submit(
         return redirect(projects_url(project_id, project_view, 'task_not_found'))
 
     set_task_checklist_item_done(item_id, not bool(item['done']))
-    return redirect(projects_url(int(task['project_id']), project_view))
+    return redirect(task_return_url(int(item['task_id']), return_to, int(task['project_id']), project_view))
 
 
 @app.post('/tasks/{task_id}/attachments')
@@ -1490,6 +1601,7 @@ async def upload_attachment_submit(
     task_id: int,
     project_id: int = Form(...),
     view: str = Form(default='all'),
+    return_to: str = Form(default='project'),
     csrf: str = Form(...),
     file: UploadFile = File(...),
 ):
@@ -1499,23 +1611,23 @@ async def upload_attachment_submit(
 
     project_view = normalize_view(view)
     if not validate_csrf(request, csrf):
-        return redirect(projects_url(project_id, project_view, 'csrf'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'csrf'))
 
     task = get_task_if_accessible(task_id, int(user['id']))
     if not task:
-        return redirect(projects_url(project_id, project_view, 'task_not_found'))
+        return redirect(task_return_url(task_id, return_to, project_id, project_view, 'task_not_found'))
 
     if not file.filename:
-        return redirect(projects_url(int(task['project_id']), project_view, 'missing_file'))
+        return redirect(task_return_url(task_id, return_to, int(task['project_id']), project_view, 'missing_file'))
 
     content = await file.read(MAX_ATTACHMENT_BYTES + 1)
     if len(content) > MAX_ATTACHMENT_BYTES:
-        return redirect(projects_url(int(task['project_id']), project_view, 'file_too_large'))
+        return redirect(task_return_url(task_id, return_to, int(task['project_id']), project_view, 'file_too_large'))
 
     filename = Path(file.filename).name.strip() or 'attachment.bin'
     mime = (file.content_type or 'application/octet-stream').strip()
     create_attachment(task_id, filename, mime, len(content), content, int(user['id']), user['username'])
-    return redirect(projects_url(int(task['project_id']), project_view))
+    return redirect(task_return_url(task_id, return_to, int(task['project_id']), project_view))
 
 
 @app.get('/attachments/{attachment_id}/download')

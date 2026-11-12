@@ -1,0 +1,9 @@
+<dialog id="new-project" class="pm-dialog" aria-labelledby="new-project-title">
+ <div class="pm-dialog-heading"><div><span class="pm-overline">NEUES VORHABEN</span><h2 id="new-project-title">Ein Projekt beginnt mit einer Idee.</h2></div><button class="pm-icon-button" type="button" data-close-dialog aria-label="Schließen">{{ icon('close') }}</button></div>
+ <form method="post" action="/projects" class="pm-form"><input type="hidden" name="csrf" value="{{ csrf_token }}">
+  <label for="create_name">Projektname<input id="create_name" name="name" placeholder="Zum Beispiel: Unser Gartenprojekt" required maxlength="200"></label>
+  <label for="create_description">Worum geht es?<textarea id="create_description" name="description" rows="3" placeholder="Ziel, Ideen oder ein kurzer Überblick …"></textarea></label>
+  <label for="create_parent">Übergeordnetes Projekt<select id="create_parent" name="parent_id"><option value="">Eigenständiges Projekt</option>{% for p in parent_options_new %}<option value="{{ p.id }}">{{ '— ' * p.depth }}{{ p.name }}</option>{% endfor %}</select></label>
+  <div class="pm-dialog-footer"><button type="button" class="pm-button pm-button-plain" data-close-dialog>Abbrechen</button><button class="pm-button" type="submit">Projekt anlegen {{ icon('arrow') }}</button></div>
+ </form>
+</dialog>

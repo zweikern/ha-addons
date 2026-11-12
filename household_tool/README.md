@@ -125,3 +125,9 @@ Projektmanagement-Erweiterungen, optionale HA-Erinnerungen und Release-Abnahme:
 [Release 0.7.0](docs/project-wiki/release-0.7.0.md).
 Vor dem Update ein Add-on-Backup inklusive Daten erstellen. Erinnerungen sind
 standardmaessig deaktiviert und benoetigen eine explizite Admin-Zielzuordnung.
+
+## Version 0.8.0: Projektplanung
+
+Neue Arbeitsoberflaeche und Gantt-Projektplan unter **Projekte > Projektplan**.
+Start-/Enddaten setzen, Vorgaenger verknuepfen und den Plan als PDF drucken.
+[Anleitung und Release-Abnahme](docs/project-wiki/release-0.8.0.md).

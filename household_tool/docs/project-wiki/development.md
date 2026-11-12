@@ -59,3 +59,17 @@ pruefen. Keine echten Passwoerter in Logs, Tests oder Dokumentation uebernehmen.
 Benutzerloeschung weist Projekte und Uploads einem anderen Benutzer zu.
 Die Folgen fuer Eigentum und Speicherkontingent vor Aenderungen beachten.
 SQLite-Verbindungen werden durch den zentralen ManagedConnection-Kontext nach Commit/Rollback geschlossen. ResourceWarnings werden im Release-Test als Fehler behandelt.
+
+## Stand 0.8.0
+
+67 Tests inklusive `test_planning.py`. Ausfuehren mit:
+
+```sh
+python -W error::ResourceWarning -m unittest discover -s tests -v
+```
+
+`test_project_kanban_calendar.py` prueft jetzt Board-Spalten und deren exakte
+Aufgabenzahlen ueber DOM-Datenattribute statt alter Ueberschriftentexte.
+Gantt-Layout, Migration, CRUD/Rechte und der Verbleib von Planungsdaten nach
+Status-/Metadatenaenderungen sind separat abgesichert.
+Browser- und Druckabnahme: [Release 0.8.0](release-0.8.0.md).
