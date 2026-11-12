@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Meine Aufgaben | Household Tool{% endblock %}
+{% block content %}
+<div class="pm-workspace my-tasks">
+  <header class="card project-header">
+    <div>
+      <h2>Meine Aufgaben</h2>
+      <p>Projektübergreifend alle dir zugewiesenen Aufgaben.</p>
+    </div>
+    <div class="project-header-meta">
+      <a class="filter-chip {% if selected_view == 'all' %}is-active{% endif %}" href="/my-tasks">Aktiv: {{ counters.all }}</a>
+      <a class="filter-chip {% if selected_view == 'focus' %}is-active{% endif %}" href="/my-tasks?view=focus">Fokus: {{ counters.focus }}</a>
+      <a class="filter-chip {% if selected_view == 'today' %}is-active{% endif %}" href="/my-tasks?view=today">Heute: {{ counters.today }}</a>
+      <a class="filter-chip {% if selected_view == 'tomorrow' %}is-active{% endif %}" href="/my-tasks?view=tomorrow">Morgen: {{ counters.tomorrow }}</a>
+      <a class="filter-chip {% if selected_view == 'overdue' %}is-active{% endif %}" href="/my-tasks?view=overdue">Überfällig: {{ counters.overdue }}</a>
+      <a class="filter-chip {% if selected_view == 'history' %}is-active{% endif %}" href="/my-tasks?view=history">Historie: {{ counters.history }}</a>
+    </div>
+  </header>
+
+  <section class="card">
+    <h3>
+      {% if selected_view == 'history' %}Erledigte Aufgaben{% else %}Aufgaben{% endif %}
+      ({{ tasks|length }})
+    </h3>
+    {% if selected_view == 'history' %}<p class="muted">Nur erledigte Aufgaben; aktive Aufgaben bleiben in den übrigen Ansichten sichtbar.</p>{% endif %}
+
+    {% if tasks %}
+      <table>
+        <tbody>
+          {% for task in tasks %}
+            <tr data-task-search="{{ (task.title ~ ' ' ~ task.project_name)|lower }}">
+              <td>
+                <div class="task-title">
+                  {% if task.focus %}<span class="focus-dot" title="Fokus">★</span>{% endif %}
+                  <a href="/tasks/{{ task.id }}">{{ task.title }}</a>
+                </div>
+                <div class="task-sub">Projekt: <a href="/projects?project_id={{ task.project_id }}">{{ task.project_name }}</a></div>
+                {% if task.deadline %}<div class="chip {% if task.deadline < today and task.status != 'done' %}pm-overdue{% endif %}">Deadline: {{ task.deadline }}</div>{% endif %}
+              </td>
+              <td>
+                {% if task.status == 'open' %}<span class="chip chip-open">offen</span>{% endif %}
+                {% if task.status == 'in_progress' %}<span class="chip chip-progress">in Arbeit</span>{% endif %}
+                {% if task.status == 'done' %}<span class="chip chip-done">erledigt</span>{% endif %}
+                {% if task.priority == 'high' %}<span class="chip chip-priority">hoch</span>{% endif %}
+                {% if task.priority == 'low' %}<span class="chip chip-priority-low">niedrig</span>{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">Keine Aufgaben für diesen Filter vorhanden.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import calendar
 import json
 import sqlite3
 import os
+import time
+import uuid
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -12,12 +15,34 @@ DATA_DIR = Path(os.environ.get('HOUSEHOLD_DATA_DIR', '/data'))
 DB_PATH = DATA_DIR / 'app.db'
 
 
-def get_connection() -> sqlite3.Connection:
+class _ManagedConnection:
+    """Wrappt eine sqlite3.Connection, damit ``with get_connection()`` die
+    Verbindung nach dem Block zuverlaessig schliesst, waehrend Commit/Rollback
+    weiterhin ueber den sqlite3-Context-Manager ablaufen."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return self._conn.__exit__(exc_type, exc_value, traceback)
+        finally:
+            self._conn.close()
+
+
+def get_connection() -> _ManagedConnection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys = ON')
-    return conn
+    return _ManagedConnection(conn)
 
 
 def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -34,6 +59,8 @@ def init_db() -> None:
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL CHECK(role IN ('admin', 'user')),
+                reminder_opt_in INTEGER NOT NULL DEFAULT 0,
+                reminder_target TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -54,6 +81,9 @@ def init_db() -> None:
                 description TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'in_progress', 'done')),
                 focus INTEGER NOT NULL DEFAULT 0,
+                priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low', 'normal', 'high')),
+                recurrence TEXT,
+                milestone_id INTEGER,
                 assignee_id INTEGER,
                 completed_at TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -152,6 +182,125 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_music_tracks_accepted_at
                 ON music_tracks(accepted_at DESC);
+
+            CREATE TABLE IF NOT EXISTS task_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                author_id INTEGER,
+                author_name TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY(author_id) REFERENCES users(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS task_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                actor_id INTEGER,
+                actor_name TEXT NOT NULL DEFAULT '',
+                event_type TEXT NOT NULL,
+                old_value TEXT,
+                new_value TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY(actor_id) REFERENCES users(id) ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_task_comments_task
+                ON task_comments(task_id, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_task_events_task
+                ON task_events(task_id, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_tasks_project_status
+                ON tasks(project_id, status);
+
+            CREATE INDEX IF NOT EXISTS idx_tasks_assignee
+                ON tasks(assignee_id);
+
+            CREATE TABLE IF NOT EXISTS reminder_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                assignee_id INTEGER NOT NULL,
+                delivery_date TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed')),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(task_id, assignee_id, delivery_date),
+                FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY(assignee_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_reminder_deliveries_date
+                ON reminder_deliveries(delivery_date, status);
+
+            CREATE TABLE IF NOT EXISTS task_checklist_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                done INTEGER NOT NULL DEFAULT 0,
+                position INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_task_checklist_items_task
+                ON task_checklist_items(task_id, position);
+
+            CREATE TABLE IF NOT EXISTS task_recurrence_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_task_id INTEGER NOT NULL,
+                followup_task_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source_task_id),
+                FOREIGN KEY(source_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY(followup_task_id) REFERENCES tasks(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS task_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                focus INTEGER NOT NULL DEFAULT 0,
+                priority TEXT NOT NULL DEFAULT 'normal',
+                created_by INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(created_by) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS task_template_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(template_id) REFERENCES task_templates(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS milestones (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                due_date TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_milestones_project
+                ON milestones(project_id, due_date);
+
+            CREATE TABLE IF NOT EXISTS task_dependencies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                depends_on_task_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(task_id, depends_on_task_id),
+                FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY(depends_on_task_id) REFERENCES tasks(id) ON DELETE CASCADE
+            );
             '''
         )
 
@@ -167,11 +316,34 @@ def init_db() -> None:
         if not _has_column(conn, 'tasks', 'completed_at'):
             conn.execute('ALTER TABLE tasks ADD COLUMN completed_at TEXT')
 
+        if not _has_column(conn, 'tasks', 'priority'):
+            conn.execute("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'")
+
+        if not _has_column(conn, 'tasks', 'recurrence'):
+            conn.execute('ALTER TABLE tasks ADD COLUMN recurrence TEXT')
+
+        if not _has_column(conn, 'tasks', 'milestone_id'):
+            conn.execute('ALTER TABLE tasks ADD COLUMN milestone_id INTEGER')
+
+        # Indizes auf Spaet-Migrationsspalten erst nach den ALTER-Anweisungen.
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_project_deadline ON tasks(project_id, deadline)')
+
         if not _has_column(conn, 'users', 'email'):
             conn.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
 
         if not _has_column(conn, 'users', 'mail_opt_in'):
             conn.execute('ALTER TABLE users ADD COLUMN mail_opt_in INTEGER NOT NULL DEFAULT 0')
+
+        if not _has_column(conn, 'users', 'reminder_opt_in'):
+            conn.execute('ALTER TABLE users ADD COLUMN reminder_opt_in INTEGER NOT NULL DEFAULT 0')
+
+        if not _has_column(conn, 'users', 'reminder_target'):
+            conn.execute("ALTER TABLE users ADD COLUMN reminder_target TEXT NOT NULL DEFAULT ''")
+
+        if not _has_column(conn, 'reminder_deliveries', 'claim_token'):
+            conn.execute("ALTER TABLE reminder_deliveries ADD COLUMN claim_token TEXT")
+        if not _has_column(conn, 'reminder_deliveries', 'lease_until'):
+            conn.execute("ALTER TABLE reminder_deliveries ADD COLUMN lease_until REAL NOT NULL DEFAULT 0")
 
         if not _has_column(conn, 'music_tracks', 'favorite'):
             conn.execute('ALTER TABLE music_tracks ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0')
@@ -197,7 +369,7 @@ def list_users() -> list[sqlite3.Row]:
     with get_connection() as conn:
         return conn.execute(
             '''
-            SELECT id, username, role, email, mail_opt_in, created_at
+            SELECT id, username, role, email, mail_opt_in, reminder_opt_in, reminder_target, created_at
             FROM users
             ORDER BY username ASC
             '''
@@ -210,15 +382,25 @@ def create_user(
     role: str,
     email: str = '',
     mail_opt_in: bool = False,
+    reminder_opt_in: bool = False,
+    reminder_target: str = '',
 ) -> bool:
     try:
         with get_connection() as conn:
             conn.execute(
                 '''
-                INSERT INTO users (username, password_hash, role, email, mail_opt_in)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO users (username, password_hash, role, email, mail_opt_in, reminder_opt_in, reminder_target)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''',
-                (username, password_hash, role, email.strip(), 1 if mail_opt_in else 0),
+                (
+                    username,
+                    password_hash,
+                    role,
+                    email.strip(),
+                    1 if mail_opt_in else 0,
+                    1 if reminder_opt_in else 0,
+                    reminder_target.strip(),
+                ),
             )
         return True
     except sqlite3.IntegrityError:
@@ -230,6 +412,8 @@ def update_user_profile(
     email: str,
     mail_opt_in: bool,
     new_password_hash: str | None = None,
+    reminder_opt_in: bool = False,
+    reminder_target: str = '',
 ) -> bool:
     with get_connection() as conn:
         existing = conn.execute(
@@ -243,19 +427,30 @@ def update_user_profile(
             conn.execute(
                 '''
                 UPDATE users
-                SET email = ?, mail_opt_in = ?, password_hash = ?
+                SET email = ?, mail_opt_in = ?, reminder_opt_in = ?, password_hash = ?
                 WHERE id = ?
                 ''',
-                (email.strip(), 1 if mail_opt_in else 0, new_password_hash, user_id),
+                (
+                    email.strip(),
+                    1 if mail_opt_in else 0,
+                    1 if reminder_opt_in else 0,
+                    new_password_hash,
+                    user_id,
+                ),
             )
         else:
             conn.execute(
                 '''
                 UPDATE users
-                SET email = ?, mail_opt_in = ?
+                SET email = ?, mail_opt_in = ?, reminder_opt_in = ?
                 WHERE id = ?
                 ''',
-                (email.strip(), 1 if mail_opt_in else 0, user_id),
+                (
+                    email.strip(),
+                    1 if mail_opt_in else 0,
+                    1 if reminder_opt_in else 0,
+                    user_id,
+                ),
             )
     return True
 
@@ -303,6 +498,8 @@ def update_user_by_admin(
     email: str,
     mail_opt_in: bool,
     new_password_hash: str | None = None,
+    reminder_opt_in: bool = False,
+    reminder_target: str = '',
 ) -> str:
     with get_connection() as conn:
         target = conn.execute(
@@ -324,7 +521,7 @@ def update_user_by_admin(
                 conn.execute(
                     '''
                     UPDATE users
-                    SET username = ?, role = ?, email = ?, mail_opt_in = ?, password_hash = ?
+                    SET username = ?, role = ?, email = ?, mail_opt_in = ?, reminder_opt_in = ?, password_hash = ?
                     WHERE id = ?
                     ''',
                     (
@@ -332,7 +529,8 @@ def update_user_by_admin(
                         role,
                         email.strip(),
                         1 if mail_opt_in else 0,
-                        new_password_hash,
+                        1 if reminder_opt_in else 0,
+                            new_password_hash,
                         user_id,
                     ),
                 )
@@ -340,10 +538,17 @@ def update_user_by_admin(
                 conn.execute(
                     '''
                     UPDATE users
-                    SET username = ?, role = ?, email = ?, mail_opt_in = ?
+                    SET username = ?, role = ?, email = ?, mail_opt_in = ?, reminder_opt_in = ?
                     WHERE id = ?
                     ''',
-                    (username.strip(), role, email.strip(), 1 if mail_opt_in else 0, user_id),
+                    (
+                        username.strip(),
+                        role,
+                        email.strip(),
+                        1 if mail_opt_in else 0,
+                        1 if reminder_opt_in else 0,
+                            user_id,
+                    ),
                 )
         except sqlite3.IntegrityError:
             return 'username_taken'
@@ -391,6 +596,13 @@ def delete_user_with_reassignment(user_id: int, reassignment_user_id: int) -> st
         )
         conn.execute(
             'UPDATE tasks SET assignee_id = NULL WHERE assignee_id = ?',
+            (user_id,),
+        )
+
+        # Persoenliche Vorlagen sind privat und werden beim Loeschen des
+        # Kontos entfernt (keine stillschweigende Weitergabe an andere Nutzer).
+        conn.execute(
+            'DELETE FROM task_templates WHERE created_by = ?',
             (user_id,),
         )
 
@@ -522,6 +734,31 @@ def get_accessible_project(project_id: int, user_id: int) -> sqlite3.Row | None:
         ).fetchone()
 
 
+def _username(conn: sqlite3.Connection, user_id: int | None) -> str | None:
+    if user_id is None:
+        return None
+    row = conn.execute('SELECT username FROM users WHERE id = ? LIMIT 1', (user_id,)).fetchone()
+    return str(row['username']) if row else str(user_id)
+
+
+def _record_event(
+    conn: sqlite3.Connection,
+    task_id: int,
+    actor_id: int | None,
+    actor_name: str,
+    event_type: str,
+    old_value: str | None = None,
+    new_value: str | None = None,
+) -> None:
+    conn.execute(
+        '''
+        INSERT INTO task_events (task_id, actor_id, actor_name, event_type, old_value, new_value)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ''',
+        (task_id, actor_id, actor_name or '', event_type, old_value, new_value),
+    )
+
+
 def create_task(
     project_id: int,
     title: str,
@@ -530,27 +767,40 @@ def create_task(
     assignee_id: int | None,
     focus: bool = False,
     deadline: str | None = None,
+    priority: str = 'normal',
+    recurrence: str | None = None,
+    milestone_id: int | None = None,
+    actor_id: int | None = None,
+    actor_name: str = '',
 ) -> int:
     deadline = normalize_deadline(deadline)
+    if priority not in {'low', 'normal', 'high'}:
+        priority = 'normal'
+    if recurrence not in {'daily', 'weekly', 'monthly'}:
+        recurrence = None
     with get_connection() as conn:
         completed_at = 'CURRENT_TIMESTAMP' if status == 'done' else None
         if completed_at:
             cur = conn.execute(
                 '''
-                INSERT INTO tasks (project_id, title, description, status, focus, assignee_id, completed_at)
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO tasks (project_id, title, description, status, focus, priority, recurrence, milestone_id, assignee_id, completed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''',
-                (project_id, title, description, status, 1 if focus else 0, assignee_id),
+                (project_id, title, description, status, 1 if focus else 0, priority, recurrence, milestone_id, assignee_id),
             )
         else:
             cur = conn.execute(
                 '''
-                INSERT INTO tasks (project_id, title, description, status, focus, assignee_id)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO tasks (project_id, title, description, status, focus, priority, recurrence, milestone_id, assignee_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''',
-                (project_id, title, description, status, 1 if focus else 0, assignee_id),
+                (project_id, title, description, status, 1 if focus else 0, priority, recurrence, milestone_id, assignee_id),
             )
         conn.execute('UPDATE tasks SET deadline = ? WHERE id = ?', (deadline, cur.lastrowid))
+        if actor_id is not None:
+            _record_event(conn, int(cur.lastrowid), actor_id, actor_name, 'task_created', None, status)
+        if status == 'done':
+            _handle_recurrence(conn, int(cur.lastrowid), status)
         return int(cur.lastrowid)
 
 
@@ -562,9 +812,9 @@ def project_today() -> date:
     return datetime.now(ZoneInfo('Europe/Berlin')).date()
 
 
-def list_project_tasks(project_id: int, view: str = 'all') -> list[sqlite3.Row]:
+def _task_filter(view: str, q: str = '') -> tuple[str, list[Any]]:
     where = 'WHERE t.project_id = ?'
-    params: list[Any] = [project_id]
+    params: list[Any] = []
 
     if view not in {'done', 'history'}:
         where += " AND t.status != 'done'"
@@ -583,7 +833,18 @@ def list_project_tasks(project_id: int, view: str = 'all') -> list[sqlite3.Row]:
     elif view == 'in_progress':
         where += " AND t.status = 'in_progress'"
 
-    query = f'''
+    search = (q or '').strip()
+    if search:
+        pattern = f'%{search}%'
+        where += (
+            ' AND (t.title LIKE ? OR t.description LIKE ?'
+            ' OR EXISTS (SELECT 1 FROM users u2 WHERE u2.id = t.assignee_id AND u2.username LIKE ?))'
+        )
+        params.extend([pattern, pattern, pattern])
+    return where, params
+
+
+_TASK_SELECT = '''
         SELECT
             t.id,
             t.project_id,
@@ -592,6 +853,9 @@ def list_project_tasks(project_id: int, view: str = 'all') -> list[sqlite3.Row]:
             t.deadline,
             t.status,
             t.focus,
+            t.priority,
+            t.recurrence,
+            t.milestone_id,
             t.created_at,
             t.completed_at,
             t.assignee_id,
@@ -599,7 +863,9 @@ def list_project_tasks(project_id: int, view: str = 'all') -> list[sqlite3.Row]:
             (SELECT COUNT(*) FROM task_attachments a WHERE a.task_id = t.id) AS attachment_count
         FROM tasks t
         LEFT JOIN users u ON u.id = t.assignee_id
-        {where}
+'''
+
+_TASK_ORDER = '''
         ORDER BY
             t.completed_at DESC,
             t.deadline IS NULL,
@@ -608,15 +874,594 @@ def list_project_tasks(project_id: int, view: str = 'all') -> list[sqlite3.Row]:
             CASE WHEN t.status = 'done' THEN 1 ELSE 0 END,
             t.created_at DESC,
             t.id DESC
-    '''
+'''
 
+
+def list_project_tasks(
+    project_id: int,
+    view: str = 'all',
+    limit: int | None = None,
+    offset: int | None = None,
+    q: str = '',
+) -> list[sqlite3.Row]:
+    where, extra = _task_filter(view, q)
+    params: list[Any] = [project_id] + extra
+    query = f'{_TASK_SELECT} {where} {_TASK_ORDER}'
+    if limit is not None:
+        query += ' LIMIT ?'
+        params.append(int(limit))
+        if offset is not None:
+            query += ' OFFSET ?'
+            params.append(int(offset))
     with get_connection() as conn:
         return conn.execute(query, tuple(params)).fetchall()
 
 
-def list_project_history(project_id: int, limit: int | None = None) -> list[sqlite3.Row]:
-    rows = list_project_tasks(project_id, 'history')
-    return rows if limit is None else rows[:limit]
+def count_project_tasks(project_id: int, view: str = 'all', q: str = '') -> int:
+    where, extra = _task_filter(view, q)
+    params: list[Any] = [project_id] + extra
+    with get_connection() as conn:
+        value = conn.execute(f'SELECT COUNT(*) FROM tasks t {where}', tuple(params)).fetchone()[0]
+        return int(value or 0)
+
+
+def list_project_history(
+    project_id: int,
+    limit: int | None = None,
+    offset: int | None = None,
+) -> list[sqlite3.Row]:
+    return list_project_tasks(project_id, 'history', limit=limit, offset=offset)
+
+
+def _my_task_filter(view: str) -> tuple[str, list[Any]]:
+    extra = ''
+    params: list[Any] = []
+    if view not in {'history', 'done'}:
+        extra += " AND t.status != 'done'"
+    if view == 'focus':
+        extra += " AND t.focus = 1 AND t.status IN ('open', 'in_progress')"
+    elif view in {'history', 'done'}:
+        extra += " AND t.status = 'done'"
+    elif view in {'today', 'tomorrow'}:
+        extra += ' AND t.deadline = ?'
+        params.append((project_today() + timedelta(days=view == 'tomorrow')).isoformat())
+    elif view == 'overdue':
+        extra += ' AND t.deadline < ?'
+        params.append(project_today().isoformat())
+    elif view == 'in_progress':
+        extra += " AND t.status = 'in_progress'"
+    elif view == 'open':
+        extra += " AND t.status = 'open'"
+    return extra, params
+
+
+_MY_TASK_FROM = '''
+        FROM tasks t
+        JOIN projects p ON p.id = t.project_id
+        LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
+        WHERE t.assignee_id = ?
+'''
+
+
+def list_my_tasks(user_id: int, view: str = 'all') -> list[sqlite3.Row]:
+    extra, filter_params = _my_task_filter(view)
+    params: list[Any] = [user_id, user_id] + filter_params + [user_id, user_id]
+    query = f'''
+        SELECT
+            t.id,
+            t.project_id,
+            p.name AS project_name,
+            t.title,
+            t.deadline,
+            t.status,
+            t.focus,
+            t.priority,
+            t.created_at,
+            t.completed_at
+        {_MY_TASK_FROM}
+        {extra}
+          AND (p.created_by = ? OR pm.user_id = ?)
+        ORDER BY
+            t.deadline IS NULL,
+            t.deadline ASC,
+            CASE t.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
+            t.focus DESC,
+            t.created_at DESC,
+            t.id DESC
+    '''
+    with get_connection() as conn:
+        return conn.execute(query, tuple(params)).fetchall()
+
+
+def count_my_tasks(user_id: int, view: str) -> int:
+    extra, filter_params = _my_task_filter(view)
+    params: list[Any] = [user_id, user_id] + filter_params + [user_id, user_id]
+    query = f'''
+        SELECT COUNT(*)
+        {_MY_TASK_FROM}
+        {extra}
+          AND (p.created_by = ? OR pm.user_id = ?)
+    '''
+    with get_connection() as conn:
+        value = conn.execute(query, tuple(params)).fetchone()[0]
+        return int(value or 0)
+
+
+def get_reminder_candidate(task_id: int, assignee_id: int, delivery_date: str) -> sqlite3.Row | None:
+    """Rechte, Status, Opt-in und Faelligkeitsdatum unmittelbar vor dem Versand erneut pruefen."""
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT t.id, t.title, t.deadline, t.status, t.assignee_id, u.username, u.reminder_target
+            FROM tasks t
+            JOIN projects p ON p.id = t.project_id
+            LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
+            JOIN users u ON u.id = t.assignee_id
+            WHERE t.id = ? AND t.assignee_id = ?
+              AND t.status != 'done'
+              AND t.deadline = ?
+              AND u.reminder_opt_in = 1
+              AND (p.created_by = t.assignee_id OR pm.user_id = t.assignee_id)
+            LIMIT 1
+            ''',
+            (assignee_id, task_id, assignee_id, delivery_date),
+        ).fetchone()
+
+
+def list_due_reminders(delivery_date: str) -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT t.id, t.title, t.deadline, t.assignee_id, u.username, u.reminder_target
+            FROM tasks t
+            JOIN projects p ON p.id = t.project_id
+            LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = t.assignee_id
+            JOIN users u ON u.id = t.assignee_id
+            WHERE t.deadline = ? AND t.status != 'done'
+              AND u.reminder_opt_in = 1
+              AND u.reminder_target != ''
+              AND (p.created_by = t.assignee_id OR pm.user_id = t.assignee_id)
+            ORDER BY t.id ASC
+            ''',
+            (delivery_date,),
+        ).fetchall()
+
+
+def get_reminder_delivery(task_id: int, assignee_id: int, delivery_date: str) -> sqlite3.Row | None:
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT id, task_id, assignee_id, delivery_date, status, attempts, last_error
+            FROM reminder_deliveries
+            WHERE task_id = ? AND assignee_id = ? AND delivery_date = ?
+            LIMIT 1
+            ''',
+            (task_id, assignee_id, delivery_date),
+        ).fetchone()
+
+
+def claim_reminder_delivery(task_id: int, assignee_id: int, delivery_date: str,
+                            max_attempts: int = 3, lease_seconds: int = 120,
+                            now: float | None = None) -> str | None:
+    """Reserve one bounded attempt across processes; expired leases may retry."""
+    timestamp = time.time() if now is None else now
+    token = uuid.uuid4().hex
+    with get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute(
+            'SELECT * FROM reminder_deliveries WHERE task_id=? AND assignee_id=? AND delivery_date=?',
+            (task_id, assignee_id, delivery_date),
+        ).fetchone()
+        if max_attempts <= 0 or (row and (row['status'] == 'sent' or
+                row['attempts'] >= max_attempts or row['lease_until'] > timestamp)):
+            return None
+        conn.execute(
+            '''
+            INSERT INTO reminder_deliveries
+                (task_id, assignee_id, delivery_date, status, attempts, claim_token, lease_until)
+            VALUES (?, ?, ?, 'pending', 1, ?, ?)
+            ON CONFLICT(task_id, assignee_id, delivery_date) DO UPDATE SET
+                attempts = reminder_deliveries.attempts + 1,
+                status = 'pending', claim_token = excluded.claim_token,
+                lease_until = excluded.lease_until,
+                updated_at = CURRENT_TIMESTAMP
+            ''',
+            (task_id, assignee_id, delivery_date, token, timestamp + lease_seconds),
+        )
+        return token
+
+
+def set_reminder_delivery_status(
+    task_id: int,
+    assignee_id: int,
+    delivery_date: str,
+    status: str,
+    error: str | None = None,
+    *, claim_token: str,
+) -> bool:
+    with get_connection() as conn:
+        cursor = conn.execute(
+            '''
+            UPDATE reminder_deliveries
+            SET status = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP,
+                claim_token = NULL, lease_until = 0
+            WHERE task_id = ? AND assignee_id = ? AND delivery_date = ? AND claim_token = ?
+            ''',
+            (status, error, task_id, assignee_id, delivery_date, claim_token),
+        )
+        return cursor.rowcount == 1
+
+
+def compute_recurrence_deadline(base: date, recurrence: str) -> date | None:
+    if recurrence == 'daily':
+        return base + timedelta(days=1)
+    if recurrence == 'weekly':
+        return base + timedelta(days=7)
+    if recurrence == 'monthly':
+        year = base.year + (1 if base.month == 12 else 0)
+        month = base.month % 12 + 1
+        last_day = calendar.monthrange(year, month)[1]
+        return date(year, month, min(base.day, last_day))
+    return None
+
+
+def list_task_checklist_items(task_id: int) -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT id, task_id, content, done, position
+            FROM task_checklist_items
+            WHERE task_id = ?
+            ORDER BY position ASC, id ASC
+            ''',
+            (task_id,),
+        ).fetchall()
+
+
+def list_project_checklist_items(project_id: int) -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT c.id, c.task_id, c.content, c.done, c.position
+            FROM task_checklist_items c
+            JOIN tasks t ON t.id = c.task_id
+            WHERE t.project_id = ?
+            ORDER BY c.position ASC, c.id ASC
+            ''',
+            (project_id,),
+        ).fetchall()
+
+
+def add_task_checklist_item(task_id: int, content: str) -> int:
+    with get_connection() as conn:
+        cur = conn.execute(
+            'INSERT INTO task_checklist_items (task_id, content, position) VALUES (?, ?, 0)',
+            (task_id, content),
+        )
+        return int(cur.lastrowid)
+
+
+def set_task_checklist_item_done(item_id: int, done: bool) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            'UPDATE task_checklist_items SET done = ? WHERE id = ?',
+            (1 if done else 0, item_id),
+        )
+
+
+def _recurrence_of(conn: sqlite3.Connection, task_id: int) -> str | None:
+    row = conn.execute('SELECT recurrence FROM tasks WHERE id = ? LIMIT 1', (task_id,)).fetchone()
+    if not row:
+        return None
+    return row['recurrence'] or None
+
+
+def _is_project_member(conn: sqlite3.Connection, project_id: int, user_id: int) -> bool:
+    row = conn.execute(
+        '''
+        SELECT p.created_by
+        FROM projects p
+        LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
+        WHERE p.id = ? AND (p.created_by = ? OR pm.user_id = ?)
+        LIMIT 1
+        ''',
+        (user_id, project_id, user_id, user_id),
+    ).fetchone()
+    return row is not None
+
+
+def _copy_checklist_to_task(conn: sqlite3.Connection, source_task_id: int, target_task_id: int) -> None:
+    items = conn.execute(
+        'SELECT content, done, position FROM task_checklist_items WHERE task_id = ? ORDER BY position ASC, id ASC',
+        (source_task_id,),
+    ).fetchall()
+    for item in items:
+        conn.execute(
+            'INSERT INTO task_checklist_items (task_id, content, done, position) VALUES (?, ?, ?, ?)',
+            (target_task_id, item['content'], item['done'], item['position']),
+        )
+
+
+def _copy_attachments_to_task(conn: sqlite3.Connection, source_task_id: int, target_task_id: int) -> None:
+    attachments = conn.execute(
+        'SELECT filename, mime, size, content FROM task_attachments WHERE task_id = ? ORDER BY id ASC',
+        (source_task_id,),
+    ).fetchall()
+    for attachment in attachments:
+        conn.execute(
+            'INSERT INTO task_attachments (task_id, filename, mime, size, content) VALUES (?, ?, ?, ?, ?)',
+            (target_task_id, attachment['filename'], attachment['mime'], attachment['size'], attachment['content']),
+        )
+
+
+def _handle_recurrence(conn: sqlite3.Connection, task_id: int, new_status: str) -> bool:
+    """Erzeugt hoechstens eine Folgeaufgabe, wenn eine Wiederholungsaufgabe abgeschlossen wird."""
+    if new_status != 'done':
+        return False
+    recurrence = _recurrence_of(conn, task_id)
+    if not recurrence:
+        return False
+
+    existing = conn.execute(
+        'SELECT 1 FROM task_recurrence_links WHERE source_task_id = ? LIMIT 1',
+        (task_id,),
+    ).fetchone()
+    if existing:
+        return False
+
+    task = conn.execute('SELECT * FROM tasks WHERE id = ? LIMIT 1', (task_id,)).fetchone()
+    if not task:
+        return False
+
+    base = project_today()
+    if task['deadline']:
+        try:
+            base = date.fromisoformat(task['deadline'])
+        except ValueError:
+            base = project_today()
+
+    next_deadline = compute_recurrence_deadline(base, recurrence)
+    if next_deadline is None:
+        return False
+
+    # Zuweisung erneut validieren: nach Freigabeentzug darf die Folgeaufgabe
+    # niemandem zugewiesen bleiben, der das Projekt nicht mehr bearbeiten kann.
+    assignee_id = task['assignee_id']
+    if assignee_id is not None and not _is_project_member(conn, task['project_id'], int(assignee_id)):
+        assignee_id = None
+
+    # Produktregel: Meilenstein wird uebernommen, Abhaengigkeiten nicht.
+    cur = conn.execute(
+        '''
+        INSERT INTO tasks (project_id, title, description, status, focus, priority, recurrence, milestone_id, assignee_id, deadline)
+        VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)
+        ''',
+        (
+            task['project_id'],
+            task['title'],
+            task['description'],
+            task['focus'],
+            task['priority'],
+            recurrence,
+            task['milestone_id'],
+            assignee_id,
+            next_deadline.isoformat(),
+        ),
+    )
+    followup_id = int(cur.lastrowid)
+    _record_event(conn, followup_id, None, 'System (Wiederholung)', 'task_created', None, 'open')
+    _copy_checklist_to_task(conn, task_id, followup_id)
+    _copy_attachments_to_task(conn, task_id, followup_id)
+    conn.execute(
+        'INSERT INTO task_recurrence_links (source_task_id, followup_task_id) VALUES (?, ?)',
+        (task_id, followup_id),
+    )
+    return True
+
+
+def list_task_templates(user_id: int) -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT id, name, title, description, focus, priority, created_at
+            FROM task_templates
+            WHERE created_by = ?
+            ORDER BY LOWER(name) ASC, id ASC
+            ''',
+            (user_id,),
+        ).fetchall()
+
+
+def list_task_template_items(template_id: int) -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT id, template_id, content, position
+            FROM task_template_items
+            WHERE template_id = ?
+            ORDER BY position ASC, id ASC
+            ''',
+            (template_id,),
+        ).fetchall()
+
+
+def create_task_template(
+    user_id: int,
+    name: str,
+    title: str,
+    description: str,
+    focus: bool,
+    priority: str,
+    checklist_lines: list[str],
+) -> int:
+    if priority not in {'low', 'normal', 'high'}:
+        priority = 'normal'
+    with get_connection() as conn:
+        cur = conn.execute(
+            '''
+            INSERT INTO task_templates (name, title, description, focus, priority, created_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''',
+            (name, title, description, 1 if focus else 0, priority, user_id),
+        )
+        template_id = int(cur.lastrowid)
+        for position, line in enumerate(checklist_lines):
+            cleaned = line.strip()
+            if cleaned:
+                conn.execute(
+                    'INSERT INTO task_template_items (template_id, content, position) VALUES (?, ?, ?)',
+                    (template_id, cleaned, position),
+                )
+        return template_id
+
+
+def create_task_from_template(project_id: int, template_id: int, user_id: int) -> int | None:
+    with get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        if not _is_project_member(conn, project_id, user_id):
+            return None
+        template = conn.execute(
+            'SELECT * FROM task_templates WHERE id = ? AND created_by = ? LIMIT 1',
+            (template_id, user_id),
+        ).fetchone()
+        if not template:
+            return None
+
+        cur = conn.execute(
+            '''
+            INSERT INTO tasks (project_id, title, description, status, focus, priority)
+            VALUES (?, ?, ?, 'open', ?, ?)
+            ''',
+            (project_id, template['title'], template['description'], template['focus'], template['priority']),
+        )
+        task_id = int(cur.lastrowid)
+        actor = conn.execute('SELECT username FROM users WHERE id=?', (user_id,)).fetchone()
+        _record_event(conn, task_id, user_id, actor['username'], 'task_created', None, 'open')
+        items = conn.execute(
+            'SELECT content, position FROM task_template_items WHERE template_id = ? ORDER BY position ASC, id ASC',
+            (template_id,),
+        ).fetchall()
+        for item in items:
+            conn.execute(
+                'INSERT INTO task_checklist_items (task_id, content, position) VALUES (?, ?, ?)',
+                (task_id, item['content'], item['position']),
+            )
+        return task_id
+
+
+def create_milestone(project_id: int, name: str, due_date: str | None) -> int:
+    due_date = normalize_deadline(due_date)
+    with get_connection() as conn:
+        cur = conn.execute(
+            'INSERT INTO milestones (project_id, name, due_date) VALUES (?, ?, ?)',
+            (project_id, name, due_date),
+        )
+        return int(cur.lastrowid)
+
+
+def list_project_milestones(project_id: int) -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT id, project_id, name, due_date, created_at
+            FROM milestones
+            WHERE project_id = ?
+            ORDER BY due_date IS NULL, due_date ASC, id ASC
+            ''',
+            (project_id,),
+        ).fetchall()
+
+
+def _reaches(conn: sqlite3.Connection, start_id: int, target_id: int) -> bool:
+    """Prueft, ob start_id transitiv von target_id abhaengt."""
+    stack = [start_id]
+    seen: set[int] = set()
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        rows = conn.execute(
+            'SELECT depends_on_task_id FROM task_dependencies WHERE task_id = ?',
+            (current,),
+        ).fetchall()
+        for row in rows:
+            nxt = int(row['depends_on_task_id'])
+            if nxt == target_id:
+                return True
+            stack.append(nxt)
+    return False
+
+
+def add_task_dependency(task_id: int, depends_on_task_id: int, user_id: int) -> str:
+    with get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        task = conn.execute(
+            '''
+            SELECT t.id, t.project_id
+            FROM tasks t
+            JOIN projects p ON p.id = t.project_id
+            LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
+            WHERE t.id = ? AND (p.created_by = ? OR pm.user_id = ?)
+            LIMIT 1
+            ''',
+            (user_id, task_id, user_id, user_id),
+        ).fetchone()
+        if not task:
+            return 'not_found'
+
+        blocker = conn.execute(
+            '''
+            SELECT t.id, t.project_id
+            FROM tasks t
+            JOIN projects p ON p.id = t.project_id
+            LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
+            WHERE t.id = ? AND (p.created_by = ? OR pm.user_id = ?)
+            LIMIT 1
+            ''',
+            (user_id, depends_on_task_id, user_id, user_id),
+        ).fetchone()
+        if not blocker:
+            return 'not_found'
+
+        if int(task['project_id']) != int(blocker['project_id']):
+            return 'different_project'
+
+        if task_id == depends_on_task_id:
+            return 'self_dependency'
+
+        if _reaches(conn, depends_on_task_id, task_id):
+            return 'cycle'
+
+        conn.execute(
+            '''
+            INSERT INTO task_dependencies (task_id, depends_on_task_id)
+            VALUES (?, ?)
+            ON CONFLICT(task_id, depends_on_task_id) DO NOTHING
+            ''',
+            (task_id, depends_on_task_id),
+        )
+        return 'ok'
+
+
+def list_project_dependencies(project_id: int) -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT
+                d.id,
+                d.task_id,
+                d.depends_on_task_id,
+                b.title AS blocking_title,
+                b.status AS blocking_status
+            FROM task_dependencies d
+            JOIN tasks t ON t.id = d.task_id
+            JOIN tasks b ON b.id = d.depends_on_task_id
+            WHERE t.project_id = ?
+            ORDER BY d.id ASC
+            ''',
+            (project_id,),
+        ).fetchall()
 
 
 def get_task_if_accessible(task_id: int, user_id: int) -> sqlite3.Row | None:
@@ -641,11 +1486,45 @@ def get_task_if_accessible(task_id: int, user_id: int) -> sqlite3.Row | None:
         ).fetchone()
 
 
-def update_task_status_if_accessible(task_id: int, user_id: int, status: str) -> int | None:
+def get_task_detail_if_accessible(task_id: int, user_id: int) -> sqlite3.Row | None:
     with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT
+                t.id,
+                t.project_id,
+                p.name AS project_name,
+                t.title,
+                t.description,
+                t.status,
+                t.focus,
+                t.priority,
+                t.recurrence,
+                t.milestone_id,
+                m.name AS milestone_name,
+                t.deadline,
+                t.created_at,
+                t.completed_at,
+                t.assignee_id,
+                u.username AS assignee_name
+            FROM tasks t
+            JOIN projects p ON p.id = t.project_id
+            LEFT JOIN users u ON u.id = t.assignee_id
+            LEFT JOIN milestones m ON m.id = t.milestone_id
+            LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
+            WHERE t.id = ? AND (p.created_by = ? OR pm.user_id = ?)
+            LIMIT 1
+            ''',
+            (user_id, task_id, user_id, user_id),
+        ).fetchone()
+
+
+def update_task_status_if_accessible(task_id: int, user_id: int, status: str, actor_name: str = '') -> int | None:
+    with get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
         row = conn.execute(
             '''
-            SELECT t.project_id
+            SELECT t.project_id, t.status
             FROM tasks t
             JOIN projects p ON p.id = t.project_id
             LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
@@ -657,6 +1536,7 @@ def update_task_status_if_accessible(task_id: int, user_id: int, status: str) ->
         if not row:
             return None
 
+        old_status = str(row['status'])
         conn.execute(
             '''
             UPDATE tasks
@@ -669,6 +1549,11 @@ def update_task_status_if_accessible(task_id: int, user_id: int, status: str) ->
             ''',
             (status, status, task_id),
         )
+        if old_status != status:
+            event_type = 'task_reopened' if (old_status == 'done' and status != 'done') else 'status_changed'
+            _record_event(conn, task_id, user_id, actor_name, event_type, old_status, status)
+        if status == 'done':
+            _handle_recurrence(conn, task_id, status)
         return int(row['project_id'])
 
 
@@ -681,12 +1566,21 @@ def update_task_if_accessible(
     assignee_id: int | None,
     focus: bool,
     deadline: str | None = None,
+    priority: str = 'normal',
+    recurrence: str | None = None,
+    milestone_id: int | None = None,
+    actor_name: str = '',
 ) -> int | None:
     deadline = normalize_deadline(deadline)
+    if priority not in {'low', 'normal', 'high'}:
+        priority = 'normal'
+    if recurrence not in {'daily', 'weekly', 'monthly'}:
+        recurrence = None
     with get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
         row = conn.execute(
             '''
-            SELECT t.project_id
+            SELECT t.project_id, t.title, t.description, t.status, t.focus, t.assignee_id, t.deadline, t.priority, t.recurrence, t.milestone_id
             FROM tasks t
             JOIN projects p ON p.id = t.project_id
             LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
@@ -705,6 +1599,9 @@ def update_task_if_accessible(
                 description = ?,
                 status = ?,
                 focus = ?,
+                priority = ?,
+                recurrence = ?,
+                milestone_id = ?,
                 assignee_id = ?,
                 deadline = ?,
                 completed_at = CASE
@@ -713,8 +1610,47 @@ def update_task_if_accessible(
                 END
             WHERE id = ?
             ''',
-            (title, description, status, 1 if focus else 0, assignee_id, deadline, status, task_id),
+            (title, description, status, 1 if focus else 0, priority, recurrence, milestone_id, assignee_id, deadline, status, task_id),
         )
+
+        if str(row['title']) != title:
+            _record_event(conn, task_id, user_id, actor_name, 'title_changed', str(row['title']), title)
+        if str(row['description']) != description:
+            _record_event(conn, task_id, user_id, actor_name, 'description_changed', str(row['description']), description)
+        if str(row['status']) != status:
+            event_type = 'task_reopened' if (str(row['status']) == 'done' and status != 'done') else 'status_changed'
+            _record_event(conn, task_id, user_id, actor_name, event_type, str(row['status']), status)
+        if int(row['focus'] or 0) != (1 if focus else 0):
+            _record_event(
+                conn, task_id, user_id, actor_name, 'focus_changed',
+                '1' if int(row['focus'] or 0) else '0',
+                '1' if focus else '0',
+            )
+        if str(row['priority'] or 'normal') != priority:
+            _record_event(conn, task_id, user_id, actor_name, 'priority_changed', str(row['priority'] or 'normal'), priority)
+        if (row['recurrence'] or None) != recurrence:
+            _record_event(conn, task_id, user_id, actor_name, 'recurrence_changed', row['recurrence'] or None, recurrence)
+        old_milestone = int(row['milestone_id']) if row['milestone_id'] is not None else None
+        if old_milestone != milestone_id:
+            _record_event(
+                conn, task_id, user_id, actor_name, 'milestone_changed',
+                str(old_milestone) if old_milestone is not None else None,
+                str(milestone_id) if milestone_id is not None else None,
+            )
+        old_assignee = int(row['assignee_id']) if row['assignee_id'] is not None else None
+        if old_assignee != assignee_id:
+            _record_event(
+                conn, task_id, user_id, actor_name, 'assignee_changed',
+                _username(conn, old_assignee),
+                _username(conn, assignee_id),
+            )
+        old_deadline = row['deadline']
+        if (old_deadline or None) != (deadline or None):
+            _record_event(conn, task_id, user_id, actor_name, 'deadline_changed', old_deadline, deadline)
+
+        if status == 'done':
+            _handle_recurrence(conn, task_id, status)
+
         return int(row['project_id'])
 
 
@@ -789,7 +1725,15 @@ def remove_project_member(project_id: int, user_id: int) -> bool:
     return True
 
 
-def create_attachment(task_id: int, filename: str, mime: str, size: int, content: bytes) -> int:
+def create_attachment(
+    task_id: int,
+    filename: str,
+    mime: str,
+    size: int,
+    content: bytes,
+    actor_id: int | None = None,
+    actor_name: str = '',
+) -> int:
     with get_connection() as conn:
         cur = conn.execute(
             '''
@@ -798,6 +1742,8 @@ def create_attachment(task_id: int, filename: str, mime: str, size: int, content
             ''',
             (task_id, filename, mime, size, content),
         )
+        if actor_id is not None:
+            _record_event(conn, task_id, actor_id, actor_name, 'attachment_added', None, filename)
         return int(cur.lastrowid)
 
 
@@ -816,6 +1762,108 @@ def list_project_attachments(project_id: int) -> list[sqlite3.Row]:
             JOIN tasks t ON t.id = a.task_id
             WHERE t.project_id = ?
             ORDER BY a.created_at DESC, a.id DESC
+            ''',
+            (project_id,),
+        ).fetchall()
+
+
+def create_task_comment(task_id: int, author_id: int | None, author_name: str, content: str) -> int:
+    with get_connection() as conn:
+        cur = conn.execute(
+            '''
+            INSERT INTO task_comments (task_id, author_id, author_name, content)
+            VALUES (?, ?, ?, ?)
+            ''',
+            (task_id, author_id, author_name or '', content),
+        )
+        return int(cur.lastrowid)
+
+
+def list_task_comments(task_id: int) -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT
+                c.id,
+                c.task_id,
+                c.author_id,
+                c.author_name,
+                c.content,
+                c.created_at,
+                u.username AS author_current
+            FROM task_comments c
+            LEFT JOIN users u ON u.id = c.author_id
+            WHERE c.task_id = ?
+            ORDER BY c.created_at ASC, c.id ASC
+            ''',
+            (task_id,),
+        ).fetchall()
+
+
+def list_task_events(task_id: int) -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT
+                e.id,
+                e.task_id,
+                e.actor_id,
+                e.actor_name,
+                e.event_type,
+                e.old_value,
+                e.new_value,
+                e.created_at,
+                u.username AS actor_current
+            FROM task_events e
+            LEFT JOIN users u ON u.id = e.actor_id
+            WHERE e.task_id = ?
+            ORDER BY e.created_at ASC, e.id ASC
+            ''',
+            (task_id,),
+        ).fetchall()
+
+
+def list_project_comments(project_id: int) -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT
+                c.id,
+                c.task_id,
+                c.author_id,
+                c.author_name,
+                c.content,
+                c.created_at,
+                u.username AS author_current
+            FROM task_comments c
+            JOIN tasks t ON t.id = c.task_id
+            LEFT JOIN users u ON u.id = c.author_id
+            WHERE t.project_id = ?
+            ORDER BY c.created_at ASC, c.id ASC
+            ''',
+            (project_id,),
+        ).fetchall()
+
+
+def list_project_events(project_id: int) -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            '''
+            SELECT
+                e.id,
+                e.task_id,
+                e.actor_id,
+                e.actor_name,
+                e.event_type,
+                e.old_value,
+                e.new_value,
+                e.created_at,
+                u.username AS actor_current
+            FROM task_events e
+            JOIN tasks t ON t.id = e.task_id
+            LEFT JOIN users u ON u.id = e.actor_id
+            WHERE t.project_id = ?
+            ORDER BY e.created_at ASC, e.id ASC
             ''',
             (project_id,),
         ).fetchall()

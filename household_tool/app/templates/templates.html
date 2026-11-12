@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Aufgabenvorlagen | Household Tool{% endblock %}
+{% block content %}
+<h1>Aufgabenvorlagen</h1>
+<p class="lede">Deine eigenen Vorlagen. Beim Anlegen aus einer Vorlage werden nur die Vorlagendaten kopiert, keine Aktivitaeten anderer Projekte.</p>
+
+{% if error == 'missing_fields' %}<div class="alert">Name und Titel sind erforderlich.</div>
+{% elif error == 'invalid_priority' %}<div class="alert">Ungueltige Prioritaet.</div>
+{% elif error == 'project_not_found' %}<div class="alert">Projekt nicht gefunden oder kein Zugriff.</div>
+{% elif error == 'template_not_found' %}<div class="alert">Vorlage nicht gefunden.</div>
+{% endif %}
+
+<section class="card">
+  <h2>Neue Vorlage</h2>
+  <form method="post" action="/templates" class="form-grid compact-form">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+
+    <label for="template_name">Vorlagenname</label>
+    <input id="template_name" name="name" required>
+
+    <label for="template_title">Aufgabentitel</label>
+    <input id="template_title" name="title" required>
+
+    <label for="template_description">Beschreibung</label>
+    <textarea id="template_description" name="description" rows="2"></textarea>
+
+    <label for="template_priority">Prioritaet</label>
+    <select id="template_priority" name="priority">
+      <option value="normal" selected>normal</option>
+      <option value="low">niedrig</option>
+      <option value="high">hoch</option>
+    </select>
+
+    <label class="inline-check"><input type="checkbox" name="focus" value="1"> Fokus</label>
+
+    <label for="template_checklist">Checkliste (eine Zeile pro Punkt)</label>
+    <textarea id="template_checklist" name="checklist" rows="4" placeholder="Milch kaufen&#10;Muell rausbringen"></textarea>
+
+    <button type="submit">Vorlage speichern</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Vorlagen ({{ templates|length }})</h2>
+  {% if templates %}
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Titel</th>
+          <th>Prioritaet</th>
+          <th>Checkliste</th>
+          <th>Aktion</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in templates %}
+          {% set tpl = entry.template %}
+          <tr>
+            <td>{{ tpl.name }}</td>
+            <td>{% if tpl.focus %}<span class="focus-dot" title="Fokus">★</span>{% endif %} {{ tpl.title }}</td>
+            <td>
+              {% if tpl.priority == 'high' %}<span class="chip chip-priority">hoch</span>{% endif %}
+              {% if tpl.priority == 'low' %}<span class="chip chip-priority-low">niedrig</span>{% endif %}
+              {% if tpl.priority == 'normal' %}<span class="chip">normal</span>{% endif %}
+            </td>
+            <td>
+              {% if entry.items %}
+                <ul class="checklist-list">
+                  {% for item in entry.items %}<li>{{ item.content }}</li>{% endfor %}
+                </ul>
+              {% else %}
+                <span class="muted">-</span>
+              {% endif %}
+            </td>
+            <td>
+              <form method="post" action="/templates/{{ tpl.id }}/use" class="form-grid compact-form">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <label>Projekt waehlen</label>
+                <select name="project_id" required>
+                  {% for p in projects %}
+                    <option value="{{ p.id }}">{{ '— ' * p.depth }}{{ p.name }}</option>
+                  {% endfor %}
+                </select>
+                <button type="submit" class="button-small">Aufgabe anlegen</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">Noch keine Vorlagen vorhanden.</p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -58,6 +58,7 @@ class ProjectLifecycleTest(unittest.TestCase):
 
     def test_migration_and_full_history(self):
         with db.get_connection() as conn:
+            conn.execute('DROP INDEX IF EXISTS idx_tasks_project_deadline')
             conn.execute('ALTER TABLE tasks DROP COLUMN deadline')
         db.init_db()
         db.init_db()

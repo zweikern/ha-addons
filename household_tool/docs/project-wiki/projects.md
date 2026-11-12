@@ -35,11 +35,20 @@ Sortierung: Historie nach Abschluss absteigend; aktive Aufgaben nach Deadline
 ## Datenmodell
 
 - `projects`: id, name, description, parent_id, created_by, created_at.
-- `tasks`: id, project_id, title, description, status, focus, assignee_id,
-  deadline, created_at, completed_at.
+- `tasks`: id, project_id, title, description, status, focus, priority,
+  recurrence, milestone_id, assignee_id, deadline, created_at, completed_at.
 - `project_members`: project_id, user_id, role (`member`/`manager`), unique Paar.
 - `task_attachments`: task_id, filename, mime, size, content (BLOB), created_at.
-- `users`: zentrale Identitaeten, Rollen, Passwort-Hash, E-Mail und Opt-in.
+- `task_comments`: task_id, author_id (nullable), author_name, content, created_at.
+- `task_events`: task_id, actor_id (nullable), actor_name, event_type, old/new, created_at.
+- `task_checklist_items`: task_id, content, done, position.
+- `task_recurrence_links`: source_task_id, followup_task_id (unique Quelle).
+- `task_templates` / `task_template_items`: Vorlagen pro Nutzer inkl. Checkliste.
+- `milestones`: project_id, name, due_date.
+- `task_dependencies`: task_id, depends_on_task_id (same project, azyklisch).
+- `reminder_deliveries`: Deduplizierung/Retries fuer HA-Erinnerungen.
+- `users`: zentrale Identitaeten, Rollen, Passwort-Hash, E-Mail, Mail- und
+  Reminder-Opt-in inkl. `reminder_target` (Empfaenger fuer HA-Erinnerungen).
 
 Migrationen liegen in `app/db.py:init_db()`, werden beim Start ausgefuehrt
 und pruefen Spalten vor ALTER TABLE. Version 0.6.0 ergaenzt nur die nullable
@@ -80,3 +89,15 @@ Alle Schreibformulare enthalten `csrf`. Nach Schreiben folgt Redirect (303).
 `list_project_tasks()` filtert aktive/abgeschlossene Aufgaben;
 `list_project_history()` liefert dieselben vollstaendigen Aufgabenfelder.
 `normalize_deadline()` validiert Daten; `project_today()` ist die testbare Uhr.
+
+Erweiterungen in 0.7.0:
+
+- `GET /my-tasks`: projektuebergreifende Sicht auf eigene Aufgaben.
+- `GET /templates`, `POST /templates`, `POST /templates/{id}/use`: Vorlagen.
+- `POST /tasks/{id}/comments`, `/checklist`, `/dependencies`; `POST /checklist/{id}/toggle`.
+- `POST /projects/{id}/milestones`.
+- `GET /tasks/{id}`: stabile, rechtegepruefte Detailansicht einer Aufgabe.
+- `GET /projects` mit `view=kanban|calendar`, `month`, `page` und serverseitiger
+  Suche `q` (filtert vor der Pagination, bleibt in der Seitennavigation erhalten).
+- `app/reminders.py`: standardmaessig deaktivierter HA-Erinnerungsadapter mit
+  adminseitiger Dienstzuordnung pro Nutzer, DB-Leases und begrenztem Best-effort-Versand. Siehe [Release-Abnahme](release-0.7.0.md).

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import calendar as calendar_module
 import json
 import os
 import mimetypes
 import secrets
 import tempfile
+import threading
 import zipfile
 from collections import defaultdict
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 import uvicorn
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
@@ -22,10 +26,16 @@ from starlette.middleware.sessions import SessionMiddleware
 from auth import hash_password, verify_password
 from db import (
     add_project_member,
+    add_task_checklist_item,
+    add_task_dependency,
     create_attachment,
     create_fs_file,
+    create_milestone,
     create_project,
     create_task,
+    create_task_comment,
+    create_task_from_template,
+    create_task_template,
     create_user,
     delete_user_with_reassignment,
     delete_fs_file_if_owner,
@@ -40,6 +50,7 @@ from db import (
     get_fs_folder,
     has_fs_folder_access,
     get_task_if_accessible,
+    get_task_detail_if_accessible,
     get_user_by_id,
     get_user_by_username,
     get_or_create_fs_folder,
@@ -54,11 +65,25 @@ from db import (
     list_fs_folders,
     list_fs_shareable_users,
     list_project_attachments,
+    list_project_checklist_items,
+    list_project_comments,
+    list_project_dependencies,
+    list_project_events,
     list_project_history,
     list_project_members,
+    list_project_milestones,
     list_project_tasks,
+    list_my_tasks,
+    list_task_template_items,
+    list_task_templates,
+    list_task_comments,
+    list_task_events,
+    list_task_checklist_items,
+    count_my_tasks,
+    count_project_tasks,
     normalize_deadline,
     project_today,
+    set_task_checklist_item_done,
     list_music_tracks,
     list_users,
     music_stats,
@@ -75,6 +100,8 @@ from db import (
     upsert_music_track,
 )
 from models import MusicTrackIngest, music_track_url
+import db
+import reminders
 
 DATA_DIR = Path(os.environ.get('HOUSEHOLD_DATA_DIR', '/data'))
 OPTIONS_PATH = DATA_DIR / 'options.json'
@@ -86,7 +113,10 @@ USER_FILESHARE_QUOTA_BYTES = 2 * 1024 * 1024 * 1024
 VALID_ROLES = {'admin', 'user'}
 VALID_MEMBER_ROLES = {'member', 'manager'}
 VALID_TASK_STATUS = {'open', 'in_progress', 'done'}
-VALID_PROJECT_VIEWS = {'all', 'open', 'done', 'history', 'focus', 'today', 'tomorrow', 'overdue', 'in_progress'}
+VALID_PRIORITIES = {'low', 'normal', 'high'}
+VALID_RECURRENCES = {'daily', 'weekly', 'monthly'}
+VALID_PROJECT_VIEWS = {'all', 'open', 'done', 'history', 'focus', 'today', 'tomorrow', 'overdue', 'in_progress', 'kanban', 'calendar'}
+VALID_MY_TASK_VIEWS = {'all', 'open', 'in_progress', 'focus', 'today', 'tomorrow', 'overdue', 'history'}
 MIN_PASSWORD_LENGTH = 8
 
 app = FastAPI(title='Household Tool')
@@ -202,6 +232,46 @@ def parse_optional_int(raw: str | None) -> int | None:
     return int(value)
 
 
+def parse_month(value: str | None) -> date:
+    if value:
+        try:
+            year, month = value.strip().split('-')
+            year_i, month_i = int(year), int(month)
+            if 1 <= year_i <= 9999 and 1 <= month_i <= 12:
+                return date(year_i, month_i, 1)
+        except (ValueError, AttributeError):
+            pass
+    today = project_today()
+    return date(today.year, today.month, 1)
+
+
+def shift_month(month_start: date, delta: int) -> date | None:
+    total = month_start.year * 12 + (month_start.month - 1) + delta
+    new_year, remainder = divmod(total, 12)
+    new_month = remainder + 1
+    if not (1 <= new_year <= 9999):
+        return None
+    return date(new_year, new_month, 1)
+
+
+def build_calendar(month_start: date, tasks_by_deadline: dict[str, list[Any]]) -> list[list[dict[str, Any]]]:
+    try:
+        cal = calendar_module.Calendar(firstweekday=0)  # Montag als Wochenstart
+        weeks: list[list[dict[str, Any]]] = []
+        for week in cal.monthdatescalendar(month_start.year, month_start.month):
+            cells: list[dict[str, Any]] = []
+            for day in week:
+                cells.append({
+                    'day': day,
+                    'in_month': day.month == month_start.month,
+                    'tasks': tasks_by_deadline.get(day.isoformat(), []),
+                })
+            weeks.append(cells)
+        return weeks
+    except (ValueError, OverflowError):
+        return []
+
+
 
 def files_url(folder_id: int | None = None, error: str | None = None) -> str:
     params: dict[str, str] = {}
@@ -290,6 +360,7 @@ def create_folder_zip(folder_id: int, user_id: int, zip_prefix: str | None = Non
     files = list_fs_files_for_folders(folder_ids)
 
     _fd, temp_path = tempfile.mkstemp(prefix='household-folder-', suffix='.zip')
+    os.close(_fd)
     Path(temp_path).unlink(missing_ok=True)
     zip_path = Path(temp_path)
 
@@ -441,11 +512,49 @@ app.add_middleware(
 )
 
 
+REMINDER_INTERVAL_SECONDS = 300
+_reminder_stop = threading.Event()
+_reminder_thread: threading.Thread | None = None
+
+
+def _run_reminders_once() -> None:
+    try:
+        reminders.run_reminder_once(options=load_options(), stop_event=_reminder_stop)
+    except Exception:
+        print('[reminders] run failed; retry on next interval')
+
+
+def _schedule_reminder_loop() -> None:
+    global _reminder_thread
+    if _reminder_thread is not None and _reminder_thread.is_alive():
+        return
+    _reminder_stop.clear()
+
+    def worker() -> None:
+        while not _reminder_stop.is_set():
+            _run_reminders_once()
+            if _reminder_stop.wait(REMINDER_INTERVAL_SECONDS):
+                break
+
+    _reminder_thread = threading.Thread(target=worker, name='household-reminders', daemon=True)
+    _reminder_thread.start()
+
+
+@app.on_event('shutdown')
+async def on_shutdown() -> None:
+    global _reminder_thread
+    _reminder_stop.set()
+    if _reminder_thread is not None:
+        await asyncio.to_thread(_reminder_thread.join)
+        _reminder_thread = None
+
+
 @app.on_event('startup')
 def on_startup() -> None:
     init_db()
     ensure_initial_admin()
     FILESHARE_DIR.mkdir(parents=True, exist_ok=True)
+    _schedule_reminder_loop()
     print('[info] Database ready at /data/app.db')
 
 
@@ -580,6 +689,9 @@ def projects_page(
     request: Request,
     project_id: int | None = None,
     view: str = 'all',
+    month: str | None = None,
+    page: int = 1,
+    q: str = '',
 ):
     user, response = require_login(request)
     if response:
@@ -602,28 +714,68 @@ def projects_page(
         project_id = first_project_id
 
     tasks = []
-    history = []
     members = []
     task_assignees = []
     shareable_users = []
     parent_options_new = [dict(p) for p in project_nav]
     parent_options_edit = []
     attachments_by_task: dict[int, list[Any]] = defaultdict(list)
+    comments_by_task: dict[int, list[Any]] = defaultdict(list)
+    events_by_task: dict[int, list[Any]] = defaultdict(list)
+    checklist_items_by_task: dict[int, list[Any]] = defaultdict(list)
+    dependencies_by_task: dict[int, list[Any]] = defaultdict(list)
+    dependency_options: list[Any] = []
+    milestones: list[Any] = []
     can_manage = False
     deadline_counts = {'today': 0, 'tomorrow': 0, 'overdue': 0}
+    kanban_open: list[Any] = []
+    kanban_progress: list[Any] = []
+    calendar_weeks: list[list[dict[str, Any]]] = []
+    calendar_month_start = project_today()
+    calendar_prev_month: date | None = None
+    calendar_next_month: date | None = None
+    page_num = 1
+    per_page = 50
+    total_tasks = 0
+    total_pages = 1
+    history_total = 0
 
     if active_project:
         project_id = int(active_project['id'])
-        tasks = list_project_tasks(project_id, project_view)
-        history = list_project_history(project_id)
+        if project_view == 'kanban':
+            tasks = list_project_tasks(project_id, 'kanban')
+            total_tasks = len(tasks)
+        elif project_view == 'calendar':
+            tasks = []
+            total_tasks = 0
+        else:
+            total_tasks = count_project_tasks(project_id, project_view, q=q)
+            total_pages = max(1, (total_tasks + per_page - 1) // per_page)
+            page_num = min(max(1, page), total_pages)
+            offset = (page_num - 1) * per_page
+            tasks = list_project_tasks(project_id, project_view, limit=per_page, offset=offset, q=q)
+
+        kanban_open = [t for t in tasks if t['status'] == 'open']
+        kanban_progress = [t for t in tasks if t['status'] == 'in_progress']
         for deadline_view in deadline_counts:
-            deadline_counts[deadline_view] = len(list_project_tasks(project_id, deadline_view))
+            deadline_counts[deadline_view] = count_project_tasks(project_id, deadline_view)
+        history_total = count_project_tasks(project_id, 'history')
         members = list_project_members(project_id)
         member_ids = {int(member['id']) for member in members}
         all_users = list_users()
         task_assignees = [u for u in all_users if int(u['id']) in member_ids]
         shareable_users = [u for u in all_users if int(u['id']) not in member_ids]
         can_manage = can_manage_project(user, active_project)
+
+        calendar_month_start = parse_month(month)
+        calendar_prev_month = shift_month(calendar_month_start, -1) or calendar_month_start
+        calendar_next_month = shift_month(calendar_month_start, 1) or calendar_month_start
+        if project_view == 'calendar':
+            tasks_by_deadline: dict[str, list[Any]] = defaultdict(list)
+            for task in list_project_tasks(project_id, 'all'):
+                if task['deadline']:
+                    tasks_by_deadline[task['deadline']].append(task)
+            calendar_weeks = build_calendar(calendar_month_start, tasks_by_deadline)
 
         descendants = project_descendants(projects, project_id)
         for candidate in project_nav:
@@ -634,6 +786,16 @@ def projects_page(
 
         for attachment in list_project_attachments(project_id):
             attachments_by_task[int(attachment['task_id'])].append(attachment)
+        for comment in list_project_comments(project_id):
+            comments_by_task[int(comment['task_id'])].append(comment)
+        for event in list_project_events(project_id):
+            events_by_task[int(event['task_id'])].append(event)
+        for item in list_project_checklist_items(project_id):
+            checklist_items_by_task[int(item['task_id'])].append(item)
+        milestones = list_project_milestones(project_id)
+        dependency_options = list_project_tasks(project_id, 'all')
+        for dependency in list_project_dependencies(project_id):
+            dependencies_by_task[int(dependency['task_id'])].append(dependency)
 
     return templates.TemplateResponse(
         request,
@@ -643,7 +805,6 @@ def projects_page(
             'projects': project_nav,
             'active_project': active_project,
             'tasks': tasks,
-            'history': history,
             'deadline_counts': deadline_counts,
             'today': project_today().isoformat(),
             'members': members,
@@ -652,7 +813,25 @@ def projects_page(
             'parent_options_new': parent_options_new,
             'parent_options_edit': parent_options_edit,
             'attachments_by_task': attachments_by_task,
+            'comments_by_task': comments_by_task,
+            'events_by_task': events_by_task,
+            'checklist_items_by_task': checklist_items_by_task,
+            'dependencies_by_task': dependencies_by_task,
+            'dependency_options': dependency_options,
+            'milestones': milestones,
+            'kanban_open': kanban_open,
+            'kanban_progress': kanban_progress,
+            'calendar_weeks': calendar_weeks,
+            'calendar_month_start': calendar_month_start,
+            'calendar_prev_month': calendar_prev_month,
+            'calendar_next_month': calendar_next_month,
             'project_view': project_view,
+            'history_total': history_total,
+            'total_tasks': total_tasks,
+            'total_pages': total_pages,
+            'page': page_num,
+            'per_page': per_page,
+            'q': q,
             'can_manage': can_manage,
             'max_attachment_mb': MAX_ATTACHMENT_BYTES // (1024 * 1024),
             'csrf_token': csrf_token(request),
@@ -667,6 +846,180 @@ def project_compat_redirect(request: Request, project_id: int, view: str = 'all'
     if response:
         return response
     return redirect(projects_url(project_id, normalize_view(view)))
+
+
+@app.get('/tasks/{task_id}', response_class=HTMLResponse)
+def task_detail_page(request: Request, task_id: int):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    task = get_task_detail_if_accessible(task_id, int(user['id']))
+    if not task:
+        return HTMLResponse('Aufgabe nicht gefunden', status_code=404)
+
+    project_id = int(task['project_id'])
+    members = list_project_members(project_id)
+    member_ids = {int(member['id']) for member in members}
+    task_assignees = [u for u in list_users() if int(u['id']) in member_ids]
+    milestones = list_project_milestones(project_id)
+
+    comments = list_task_comments(task_id)
+    events = list_task_events(task_id)
+    checklist = list_task_checklist_items(task_id)
+    attachments = [a for a in list_project_attachments(project_id) if int(a['task_id']) == task_id]
+    dependencies = [d for d in list_project_dependencies(project_id) if int(d['task_id']) == task_id]
+
+    return templates.TemplateResponse(
+        request,
+        'task_detail.html',
+        {
+            'user': user,
+            'task': task,
+            'task_assignees': task_assignees,
+            'milestones': milestones,
+            'comments': comments,
+            'events': events,
+            'checklist': checklist,
+            'attachments': attachments,
+            'dependencies': dependencies,
+            'today': project_today().isoformat(),
+            'max_attachment_mb': MAX_ATTACHMENT_BYTES // (1024 * 1024),
+            'csrf_token': csrf_token(request),
+        },
+    )
+
+
+def my_tasks_view(view: str | None) -> str:
+    if view in VALID_MY_TASK_VIEWS:
+        return str(view)
+    return 'all'
+
+
+@app.get('/my-tasks', response_class=HTMLResponse)
+def my_tasks_page(request: Request, view: str = 'all'):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    user_id = int(user['id'])
+    selected_view = my_tasks_view(view)
+    tasks = list_my_tasks(user_id, selected_view)
+
+    counters = {
+        'all': count_my_tasks(user_id, 'all'),
+        'focus': count_my_tasks(user_id, 'focus'),
+        'today': count_my_tasks(user_id, 'today'),
+        'tomorrow': count_my_tasks(user_id, 'tomorrow'),
+        'overdue': count_my_tasks(user_id, 'overdue'),
+        'history': count_my_tasks(user_id, 'history'),
+    }
+
+    return templates.TemplateResponse(
+        request,
+        'my_tasks.html',
+        {
+            'user': user,
+            'tasks': tasks,
+            'counters': counters,
+            'selected_view': selected_view,
+            'today': project_today().isoformat(),
+            'csrf_token': csrf_token(request),
+            'error': request.query_params.get('error'),
+        },
+    )
+
+
+@app.get('/templates', response_class=HTMLResponse)
+def templates_page(request: Request):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    user_id = int(user['id'])
+    templates_list = list_task_templates(user_id)
+    templates_with_items = []
+    for template in templates_list:
+        templates_with_items.append({
+            'template': template,
+            'items': list_task_template_items(int(template['id'])),
+        })
+
+    return templates.TemplateResponse(
+        request,
+        'templates.html',
+        {
+            'user': user,
+            'templates': templates_with_items,
+            'projects': build_project_nav(list_accessible_projects(user_id)),
+            'csrf_token': csrf_token(request),
+            'error': request.query_params.get('error'),
+        },
+    )
+
+
+@app.post('/templates')
+def create_template_submit(
+    request: Request,
+    name: str = Form(...),
+    title: str = Form(...),
+    description: str = Form(default=''),
+    focus: str = Form(default='0'),
+    priority: str = Form(default='normal'),
+    checklist: str = Form(default=''),
+    csrf: str = Form(...),
+):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    if not validate_csrf(request, csrf):
+        return redirect('/templates?error=csrf')
+
+    name = name.strip()
+    title = title.strip()
+    if not name or not title:
+        return redirect('/templates?error=missing_fields')
+
+    if priority not in VALID_PRIORITIES:
+        return redirect('/templates?error=invalid_priority')
+
+    lines = [line for line in (checklist or '').splitlines() if line.strip()]
+    create_task_template(
+        user_id=int(user['id']),
+        name=name,
+        title=title,
+        description=description.strip(),
+        focus=focus == '1',
+        priority=priority,
+        checklist_lines=lines,
+    )
+    return redirect('/templates')
+
+
+@app.post('/templates/{template_id}/use')
+def use_template_submit(
+    request: Request,
+    template_id: int,
+    project_id: int = Form(...),
+    csrf: str = Form(...),
+):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    if not validate_csrf(request, csrf):
+        return redirect('/templates?error=csrf')
+
+    project = get_accessible_project(project_id, int(user['id']))
+    if not project:
+        return redirect('/templates?error=project_not_found')
+
+    task_id = create_task_from_template(project_id, template_id, int(user['id']))
+    if task_id is None:
+        return redirect('/templates?error=template_not_found')
+
+    return redirect(projects_url(project_id))
 
 
 @app.post('/projects')
@@ -772,6 +1125,9 @@ def create_task_submit(
     assignee_id: str = Form(default=''),
     focus: str = Form(default='0'),
     deadline: str = Form(default=''),
+    priority: str = Form(default='normal'),
+    recurrence: str = Form(default=''),
+    milestone_id: str = Form(default=''),
     view: str = Form(default='all'),
     csrf: str = Form(...),
 ):
@@ -793,6 +1149,24 @@ def create_task_submit(
 
     if status not in VALID_TASK_STATUS:
         return redirect(projects_url(project_id, project_view, 'invalid_status'))
+
+    if priority not in VALID_PRIORITIES:
+        return redirect(projects_url(project_id, project_view, 'invalid_priority'))
+
+    recurrence_value = recurrence.strip() or None
+    if recurrence_value and recurrence_value not in VALID_RECURRENCES:
+        return redirect(projects_url(project_id, project_view, 'invalid_recurrence'))
+
+    milestone: int | None = None
+    milestone_value = milestone_id.strip()
+    if milestone_value:
+        try:
+            milestone = int(milestone_value)
+        except ValueError:
+            return redirect(projects_url(project_id, project_view, 'invalid_milestone'))
+        valid_milestone_ids = {int(m['id']) for m in list_project_milestones(project_id)}
+        if milestone not in valid_milestone_ids:
+            return redirect(projects_url(project_id, project_view, 'invalid_milestone'))
 
     assignee: int | None = None
     assignee_value = assignee_id.strip()
@@ -819,6 +1193,11 @@ def create_task_submit(
         assignee_id=assignee,
         focus=focus == '1',
         deadline=deadline_value,
+        priority=priority,
+        recurrence=recurrence_value,
+        milestone_id=milestone,
+        actor_id=int(user['id']),
+        actor_name=user['username'],
     )
     return redirect(projects_url(project_id, project_view))
 
@@ -843,7 +1222,7 @@ def update_task_status_submit(
     if status not in VALID_TASK_STATUS:
         return redirect(projects_url(project_id, project_view, 'invalid_status'))
 
-    updated_project_id = update_task_status_if_accessible(task_id, int(user['id']), status)
+    updated_project_id = update_task_status_if_accessible(task_id, int(user['id']), status, user['username'])
     if updated_project_id is None:
         return redirect(projects_url(project_id, project_view, 'task_not_found'))
 
@@ -860,6 +1239,9 @@ def edit_task_submit(
     assignee_id: str = Form(default=''),
     focus: str = Form(default='0'),
     deadline: str = Form(default=''),
+    priority: str = Form(default='normal'),
+    recurrence: str = Form(default=''),
+    milestone_id: str = Form(default=''),
     project_id: int = Form(...),
     view: str = Form(default='all'),
     csrf: str = Form(...),
@@ -879,12 +1261,30 @@ def edit_task_submit(
     if status not in VALID_TASK_STATUS:
         return redirect(projects_url(project_id, project_view, 'invalid_status'))
 
+    if priority not in VALID_PRIORITIES:
+        return redirect(projects_url(project_id, project_view, 'invalid_priority'))
+
+    recurrence_value = recurrence.strip() or None
+    if recurrence_value and recurrence_value not in VALID_RECURRENCES:
+        return redirect(projects_url(project_id, project_view, 'invalid_recurrence'))
+
     task = get_task_if_accessible(task_id, int(user['id']))
     if not task:
         return redirect(projects_url(project_id, project_view, 'task_not_found'))
 
     actual_project_id = int(task['project_id'])
     member_ids = {int(member['id']) for member in list_project_members(actual_project_id)}
+
+    milestone: int | None = None
+    milestone_value = milestone_id.strip()
+    if milestone_value:
+        try:
+            milestone = int(milestone_value)
+        except ValueError:
+            return redirect(projects_url(actual_project_id, project_view, 'invalid_milestone'))
+        valid_milestone_ids = {int(m['id']) for m in list_project_milestones(actual_project_id)}
+        if milestone not in valid_milestone_ids:
+            return redirect(projects_url(actual_project_id, project_view, 'invalid_milestone'))
 
     assignee: int | None = None
     assignee_value = assignee_id.strip()
@@ -910,11 +1310,178 @@ def edit_task_submit(
         assignee_id=assignee,
         focus=focus == '1',
         deadline=deadline_value,
+        priority=priority,
+        recurrence=recurrence_value,
+        milestone_id=milestone,
+        actor_name=user['username'],
     )
     if updated_project_id is None:
         return redirect(projects_url(project_id, project_view, 'task_not_found'))
 
     return redirect(projects_url(updated_project_id, project_view))
+
+
+@app.post('/projects/{project_id}/milestones')
+def create_milestone_submit(
+    request: Request,
+    project_id: int,
+    name: str = Form(...),
+    due_date: str = Form(default=''),
+    view: str = Form(default='all'),
+    csrf: str = Form(...),
+):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    project_view = normalize_view(view)
+    if not validate_csrf(request, csrf):
+        return redirect(projects_url(project_id, project_view, 'csrf'))
+
+    active_project = get_accessible_project(project_id, int(user['id']))
+    if not active_project:
+        return redirect(projects_url(error='project_not_found'))
+
+    if not can_manage_project(user, active_project):
+        return redirect(projects_url(project_id, project_view, 'forbidden'))
+
+    milestone_name = name.strip()
+    if not milestone_name:
+        return redirect(projects_url(project_id, project_view, 'missing_milestone_name'))
+
+    try:
+        due_value = normalize_deadline(due_date)
+    except ValueError:
+        return redirect(projects_url(project_id, project_view, 'invalid_milestone_date'))
+
+    create_milestone(project_id, milestone_name, due_value)
+    return redirect(projects_url(project_id, project_view))
+
+
+@app.post('/tasks/{task_id}/dependencies')
+def add_task_dependency_submit(
+    request: Request,
+    task_id: int,
+    depends_on_task_id: int = Form(...),
+    project_id: int = Form(...),
+    view: str = Form(default='all'),
+    csrf: str = Form(...),
+):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    project_view = normalize_view(view)
+    if not validate_csrf(request, csrf):
+        return redirect(projects_url(project_id, project_view, 'csrf'))
+
+    result = add_task_dependency(task_id, depends_on_task_id, int(user['id']))
+    if result != 'ok':
+        return redirect(projects_url(project_id, project_view, f'dependency_{result}'))
+
+    return redirect(projects_url(project_id, project_view))
+
+
+@app.post('/tasks/{task_id}/comments')
+def create_task_comment_submit(
+    request: Request,
+    task_id: int,
+    content: str = Form(...),
+    project_id: int = Form(...),
+    view: str = Form(default='all'),
+    csrf: str = Form(...),
+):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    project_view = normalize_view(view)
+    if not validate_csrf(request, csrf):
+        return redirect(projects_url(project_id, project_view, 'csrf'))
+
+    task = get_task_if_accessible(task_id, int(user['id']))
+    if not task:
+        return redirect(projects_url(project_id, project_view, 'task_not_found'))
+
+    comment = content.strip()
+    if not comment:
+        return redirect(projects_url(int(task['project_id']), project_view, 'missing_comment'))
+
+    create_task_comment(
+        task_id=task_id,
+        author_id=int(user['id']),
+        author_name=user['username'],
+        content=comment,
+    )
+    return redirect(projects_url(int(task['project_id']), project_view))
+
+
+@app.post('/tasks/{task_id}/checklist')
+def create_checklist_item_submit(
+    request: Request,
+    task_id: int,
+    content: str = Form(...),
+    project_id: int = Form(...),
+    view: str = Form(default='all'),
+    csrf: str = Form(...),
+):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    project_view = normalize_view(view)
+    if not validate_csrf(request, csrf):
+        return redirect(projects_url(project_id, project_view, 'csrf'))
+
+    task = get_task_if_accessible(task_id, int(user['id']))
+    if not task:
+        return redirect(projects_url(project_id, project_view, 'task_not_found'))
+
+    item_content = content.strip()
+    if not item_content:
+        return redirect(projects_url(int(task['project_id']), project_view, 'missing_checklist_item'))
+
+    add_task_checklist_item(task_id, item_content)
+    return redirect(projects_url(int(task['project_id']), project_view))
+
+
+@app.post('/checklist/{item_id}/toggle')
+def toggle_checklist_item_submit(
+    request: Request,
+    item_id: int,
+    project_id: int = Form(...),
+    view: str = Form(default='all'),
+    csrf: str = Form(...),
+):
+    user, response = require_login(request)
+    if response:
+        return response
+
+    project_view = normalize_view(view)
+    if not validate_csrf(request, csrf):
+        return redirect(projects_url(project_id, project_view, 'csrf'))
+
+    with db.get_connection() as conn:
+        item = conn.execute(
+            '''
+            SELECT c.id, c.task_id, c.done
+            FROM task_checklist_items c
+            JOIN tasks t ON t.id = c.task_id
+            WHERE c.id = ?
+            LIMIT 1
+            ''',
+            (item_id,),
+        ).fetchone()
+
+    if not item:
+        return redirect(projects_url(project_id, project_view, 'checklist_item_not_found'))
+
+    task = get_task_if_accessible(int(item['task_id']), int(user['id']))
+    if not task:
+        return redirect(projects_url(project_id, project_view, 'task_not_found'))
+
+    set_task_checklist_item_done(item_id, not bool(item['done']))
+    return redirect(projects_url(int(task['project_id']), project_view))
 
 
 @app.post('/tasks/{task_id}/attachments')
@@ -947,7 +1514,7 @@ async def upload_attachment_submit(
 
     filename = Path(file.filename).name.strip() or 'attachment.bin'
     mime = (file.content_type or 'application/octet-stream').strip()
-    create_attachment(task_id, filename, mime, len(content), content)
+    create_attachment(task_id, filename, mime, len(content), content, int(user['id']), user['username'])
     return redirect(projects_url(int(task['project_id']), project_view))
 
 
@@ -962,7 +1529,7 @@ def download_attachment(request: Request, attachment_id: int):
         return HTMLResponse('Attachment not found', status_code=404)
 
     filename = str(attachment['filename']).replace('"', '').replace('\n', '')
-    headers = {'Content-Disposition': f'attachment; filename="{filename}"'}
+    headers = {'Content-Disposition': "attachment; filename*=UTF-8''" + quote(filename, safe='')}
     return Response(
         content=attachment['content'],
         media_type=str(attachment['mime']) or 'application/octet-stream',
@@ -1244,7 +1811,7 @@ def files_download(request: Request, file_id: int):
         return HTMLResponse('Stored file missing', status_code=404)
 
     filename = str(item['original_name']).replace('\"', '').replace('\n', '')
-    headers = {'Content-Disposition': f'attachment; filename="{filename}"'}
+    headers = {'Content-Disposition': "attachment; filename*=UTF-8''" + quote(filename, safe='')}
     return FileResponse(
         path=file_path,
         media_type=str(item['mime']) or 'application/octet-stream',
@@ -1268,7 +1835,7 @@ def files_view(request: Request, file_id: int):
         return HTMLResponse('Stored file missing', status_code=404)
 
     filename = str(item['original_name']).replace('\"', '').replace('\n', '')
-    headers = {'Content-Disposition': f'inline; filename="{filename}"'}
+    headers = {'Content-Disposition': "inline; filename*=UTF-8''" + quote(filename, safe='')}
     return FileResponse(
         path=file_path,
         media_type=str(item['mime']) or 'application/octet-stream',
@@ -1308,6 +1875,7 @@ def download_all_folders_zip(request: Request):
         return redirect(files_url(error='no_folders'))
 
     _fd, temp_path = tempfile.mkstemp(prefix='household-all-folders-', suffix='.zip')
+    os.close(_fd)
     Path(temp_path).unlink(missing_ok=True)
     zip_path = Path(temp_path)
 
@@ -1467,6 +2035,8 @@ def account_submit(
     request: Request,
     email: str = Form(default=''),
     mail_opt_in: str = Form(default='0'),
+    reminder_opt_in: str = Form(default='0'),
+    reminder_target: str = Form(default=''),
     current_password: str = Form(default=''),
     new_password: str = Form(default=''),
     confirm_password: str = Form(default=''),
@@ -1503,6 +2073,8 @@ def account_submit(
         user_id=int(user['id']),
         email=email_clean,
         mail_opt_in=opt_in,
+        reminder_opt_in=reminder_opt_in == '1',
+        reminder_target=user['reminder_target'],
         new_password_hash=new_hash,
     )
     if not ok:
@@ -1571,6 +2143,8 @@ def create_user_submit(
     role: str = Form(default='user'),
     email: str = Form(default=''),
     mail_opt_in: str = Form(default='0'),
+    reminder_opt_in: str = Form(default='0'),
+    reminder_target: str = Form(default=''),
     csrf: str = Form(...),
 ):
     admin_user, response = require_admin(request)
@@ -1587,6 +2161,10 @@ def create_user_submit(
     if len(password) < MIN_PASSWORD_LENGTH:
         return redirect('/users?error=password_too_short')
 
+    reminder_target = reminder_target.strip()
+    if reminder_target and not reminders.valid_target(reminder_target):
+        return redirect('/users?error=invalid_reminder_target')
+
     if role not in VALID_ROLES:
         return redirect('/users?error=invalid_role')
 
@@ -1596,6 +2174,8 @@ def create_user_submit(
         role=role,
         email=email.strip(),
         mail_opt_in=mail_opt_in == '1',
+        reminder_opt_in=reminder_opt_in == '1',
+        reminder_target=reminder_target,
     )
     if not ok:
         return redirect('/users?error=user_exists')
@@ -1612,6 +2192,8 @@ def edit_user_submit(
     role: str = Form(default='user'),
     email: str = Form(default=''),
     mail_opt_in: str = Form(default='0'),
+    reminder_opt_in: str = Form(default='0'),
+    reminder_target: str = Form(default=''),
     new_password: str = Form(default=''),
     csrf: str = Form(...),
 ):
@@ -1625,6 +2207,10 @@ def edit_user_submit(
     username = username.strip()
     if not username:
         return redirect('/users?error=missing_fields')
+    reminder_target = reminder_target.strip()
+    if reminder_target and not reminders.valid_target(reminder_target):
+        return redirect('/users?error=invalid_reminder_target')
+
     if role not in VALID_ROLES:
         return redirect('/users?error=invalid_role')
 
@@ -1642,6 +2228,8 @@ def edit_user_submit(
         email=email.strip(),
         mail_opt_in=mail_opt_in == '1',
         new_password_hash=new_hash,
+        reminder_opt_in=reminder_opt_in == '1',
+        reminder_target=reminder_target,
     )
     if result == 'not_found':
         return redirect('/users?error=user_not_found')

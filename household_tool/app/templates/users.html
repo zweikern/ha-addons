@@ -17,6 +17,8 @@
   <div class="card" style="border-color:#86efac;background:#f0fdf4;color:#166534;">Benutzer erfolgreich aktualisiert.</div>
 {% elif error == 'user_deleted' %}
   <div class="card" style="border-color:#86efac;background:#f0fdf4;color:#166534;">Benutzer erfolgreich geloescht.</div>
+{% elif error == 'invalid_reminder_target' %}
+  <div class="alert">Bitte einen konkreten Dienst notify.mobile_app_geraet eingeben oder das Feld leeren.</div>
 {% endif %}
 
 <section class="card">
@@ -38,6 +40,14 @@
       Mail Opt-in aktivieren
     </label>
 
+    <label class="inline-check" for="reminder_opt_in">
+      <input id="reminder_opt_in" name="reminder_opt_in" type="checkbox" value="1">
+      Erinnerungen ueber Home Assistant aktivieren
+    </label>
+
+    <label for="reminder_target">HA-Dienst (notify.mobile_app_geraet)</label>
+    <input id="reminder_target" name="reminder_target" placeholder="notify.mobile_app_iphone">
+
     <label for="role">Rolle</label>
     <select id="role" name="role">
       <option value="user">user</option>
@@ -58,6 +68,7 @@
           <th>Rolle</th>
           <th>E-Mail</th>
           <th>Mail Opt-in</th>
+          <th>Erinnerungen</th>
           <th>Angelegt</th>
           <th>Aktionen</th>
         </tr>
@@ -88,6 +99,24 @@
                 >
                 Ja
               </label>
+            </td>
+            <td>
+              <label class="inline-check">
+                <input
+                  form="edit-user-{{ account.id }}"
+                  type="checkbox"
+                  name="reminder_opt_in"
+                  value="1"
+                  {% if account.reminder_opt_in %}checked{% endif %}
+                >
+                Ja
+              </label>
+              <input
+                form="edit-user-{{ account.id }}"
+                name="reminder_target"
+                value="{{ account.reminder_target or '' }}"
+                placeholder="notify.mobile_app_iphone"
+              >
             </td>
             <td>{{ account.created_at }}</td>
             <td>

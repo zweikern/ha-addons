@@ -101,13 +101,39 @@
         </details>
       {% endif %}
 
+      <details class="card">
+        <summary>Meilensteine ({{ milestones|length }})</summary>
+        {% if milestones %}
+          <ul class="milestone-list">
+            {% for m in milestones %}
+              <li>{{ m.name }}{% if m.due_date %} · {{ m.due_date }}{% endif %}</li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="muted">Noch keine Meilensteine.</p>
+        {% endif %}
+        {% if can_manage %}
+          <form method="post" action="/projects/{{ active_project.id }}/milestones" class="form-grid compact-form">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <input type="hidden" name="view" value="{{ project_view }}">
+            <label for="milestone_name">Name</label>
+            <input id="milestone_name" name="name" required>
+            <label for="milestone_due">Datum (optional)</label>
+            <input id="milestone_due" type="date" name="due_date">
+            <button type="submit">Meilenstein anlegen</button>
+          </form>
+        {% endif %}
+      </details>
+
       <section class="card">
         <div class="filters">
           <a class="filter-chip {% if project_view == 'all' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}">Aktive Aufgaben</a>
           <a class="filter-chip {% if project_view == 'open' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=open">Offen</a>
           <a class="filter-chip {% if project_view == 'focus' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=focus">Fokus</a>
           <a class="filter-chip {% if project_view == 'in_progress' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=in_progress">In Arbeit</a>
-          <a class="filter-chip {% if project_view == 'history' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=history">Historie ({{ history|length }})</a>
+          <a class="filter-chip {% if project_view == 'kanban' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=kanban">Kanban</a>
+          <a class="filter-chip {% if project_view == 'calendar' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=calendar">Kalender</a>
+          <a class="filter-chip {% if project_view == 'history' %}is-active{% endif %}" href="/projects?project_id={{ active_project.id }}&view=history">Historie ({{ history_total }})</a>
         </div>
 
         <details><summary>+ Neue Aufgabe</summary>
@@ -137,6 +163,26 @@
           </select>
 
           <label class="inline-check"><input type="checkbox" name="focus" value="1"> Fokus</label>
+          <label for="priority">Priorität</label>
+          <select id="priority" name="priority">
+            <option value="normal" selected>normal</option>
+            <option value="low">niedrig</option>
+            <option value="high">hoch</option>
+          </select>
+          <label for="recurrence">Wiederholung</label>
+          <select id="recurrence" name="recurrence">
+            <option value="">keine</option>
+            <option value="daily">täglich</option>
+            <option value="weekly">wöchentlich</option>
+            <option value="monthly">monatlich</option>
+          </select>
+          <label for="milestone_id">Meilenstein</label>
+          <select id="milestone_id" name="milestone_id">
+            <option value="">-</option>
+            {% for m in milestones %}
+              <option value="{{ m.id }}">{{ m.name }}</option>
+            {% endfor %}
+          </select>
           <label for="deadline">Deadline</label>
           <input id="deadline" type="date" name="deadline">
           <button type="submit">Aufgabe hinzufügen</button>
@@ -144,10 +190,111 @@
         </details>
       </section>
 
+      {% if project_view == 'kanban' %}
+      <section class="card kanban-board">
+        <h3>Kanban</h3>
+        <div class="kanban-columns">
+          <div class="kanban-column">
+            <h4>Offen ({{ kanban_open|length }})</h4>
+            {% for task in kanban_open %}
+              <div class="kanban-card" id="task-{{ task.id }}">
+                <div class="task-title">{% if task.focus %}<span class="focus-dot" title="Fokus">★</span>{% endif %} <a href="/tasks/{{ task.id }}">{{ task.title }}</a></div>
+                {% if task.deadline %}<div class="chip {% if task.deadline < today and task.status != 'done' %}pm-overdue{% endif %}">Deadline: {{ task.deadline }}</div>{% endif %}
+                <div class="task-sub">{{ task.assignee_name or '-' }}</div>
+                <form method="post" action="/tasks/{{ task.id }}/status">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <input type="hidden" name="project_id" value="{{ active_project.id }}">
+                  <input type="hidden" name="view" value="kanban">
+                  <input type="hidden" name="status" value="in_progress">
+                  <button type="submit" class="button-small secondary">In Arbeit</button>
+                </form>
+              </div>
+            {% else %}
+              <p class="muted">Keine offenen Aufgaben.</p>
+            {% endfor %}
+          </div>
+          <div class="kanban-column">
+            <h4>In Arbeit ({{ kanban_progress|length }})</h4>
+            {% for task in kanban_progress %}
+              <div class="kanban-card" id="task-{{ task.id }}">
+                <div class="task-title">{% if task.focus %}<span class="focus-dot" title="Fokus">★</span>{% endif %} <a href="/tasks/{{ task.id }}">{{ task.title }}</a></div>
+                {% if task.deadline %}<div class="chip {% if task.deadline < today and task.status != 'done' %}pm-overdue{% endif %}">Deadline: {{ task.deadline }}</div>{% endif %}
+                <div class="task-sub">{{ task.assignee_name or '-' }}</div>
+                <form method="post" action="/tasks/{{ task.id }}/status">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <input type="hidden" name="project_id" value="{{ active_project.id }}">
+                  <input type="hidden" name="view" value="kanban">
+                  <input type="hidden" name="status" value="open">
+                  <button type="submit" class="button-small">Offen</button>
+                </form>
+                <form method="post" action="/tasks/{{ task.id }}/status">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <input type="hidden" name="project_id" value="{{ active_project.id }}">
+                  <input type="hidden" name="view" value="kanban">
+                  <input type="hidden" name="status" value="done">
+                  <button type="submit" class="button-small done">Erledigt</button>
+                </form>
+              </div>
+            {% else %}
+              <p class="muted">Keine Aufgaben in Arbeit.</p>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+      {% endif %}
+
+      {% if project_view == 'calendar' %}
+      <section class="card calendar-view">
+        <div class="calendar-nav">
+          <a class="filter-chip" href="/projects?project_id={{ active_project.id }}&view=calendar&month={{ calendar_prev_month.isoformat()[:7] }}">← {{ calendar_prev_month.strftime('%B %Y') }}</a>
+          <h3>{{ calendar_month_start.strftime('%B %Y') }}</h3>
+          <a class="filter-chip" href="/projects?project_id={{ active_project.id }}&view=calendar&month={{ calendar_next_month.isoformat()[:7] }}">{{ calendar_next_month.strftime('%B %Y') }} →</a>
+        </div>
+        <table class="calendar-grid">
+          <thead><tr>{% for d in ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'] %}<th>{{ d }}</th>{% endfor %}</tr></thead>
+          <tbody>
+            {% for week in calendar_weeks %}
+              <tr>
+                {% for cell in week %}
+                  <td class="{% if not cell.in_month %}calendar-outside{% endif %}">
+                    <span class="calendar-day">{{ cell.day.day }}</span>
+                    {% for task in cell.tasks %}
+                      <a class="calendar-task" href="/tasks/{{ task.id }}">{{ task.title }}</a>
+                    {% endfor %}
+                  </td>
+                {% endfor %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="calendar-agenda">
+          {% set agenda = namespace(found=false) %}
+          {% for week in calendar_weeks %}{% for cell in week %}
+            {% if cell.in_month and cell.tasks %}
+              {% set agenda.found = true %}
+              <section class="calendar-agenda-day">
+                <h4>{{ cell.day.strftime('%d.%m.%Y') }}</h4>
+                {% for task in cell.tasks %}
+                  <a href="/tasks/{{ task.id }}">{{ task.title }}</a>
+                {% endfor %}
+              </section>
+            {% endif %}
+          {% endfor %}{% endfor %}
+          {% if not agenda.found %}<p class="muted">Keine offenen Termine in diesem Monat.</p>{% endif %}
+        </div>
+      </section>
+      {% endif %}
+
+      {% if project_view not in ['kanban', 'calendar'] %}
       <section class="card">
-        <h3>{{ 'Historie' if project_view == 'history' else 'Aufgaben' }} ({{ tasks|length }})</h3>
-        <label for="task-search">Aufgaben durchsuchen</label>
-        <input id="task-search" type="search" placeholder="Titel, Beschreibung, zuständige Person …">
+        <h3>{{ 'Historie' if project_view == 'history' else 'Aufgaben' }} ({{ total_tasks }})</h3>
+        <form method="get" action="/projects" class="task-search-form">
+          <input type="hidden" name="project_id" value="{{ active_project.id }}">
+          <input type="hidden" name="view" value="{{ project_view }}">
+          <label for="task-search">Aufgaben durchsuchen</label>
+          <input id="task-search" type="search" name="q" value="{{ q or '' }}" placeholder="Titel, Beschreibung, zuständige Person …">
+          <button type="submit" class="button-small secondary">Suchen</button>
+        </form>
         {% if project_view == 'history' %}<p class="muted">Alle abgeschlossenen Aufgaben mit vollständigen Details. Über „Offen“ kannst du sie wieder aktivieren.</p>{% endif %}
         {% if tasks %}
           <table>
@@ -163,20 +310,131 @@
             <tbody>
               {% for task in tasks %}
                 {% set task_attachments = attachments_by_task.get(task.id, []) %}
-                <tr data-task-search="{{ (task.title ~ ' ' ~ task.description ~ ' ' ~ (task.assignee_name or ''))|lower }}">
+                {% set task_comments = comments_by_task.get(task.id, []) %}
+                {% set task_events = events_by_task.get(task.id, []) %}
+                {% set task_checklist = checklist_items_by_task.get(task.id, []) %}
+                {% set task_dependencies = dependencies_by_task.get(task.id, []) %}
+                <tr id="task-{{ task.id }}" data-task-search="{{ (task.title ~ ' ' ~ task.description ~ ' ' ~ (task.assignee_name or ''))|lower }}">
                   <td>
                     <div class="task-title">
                       {% if task.focus %}<span class="focus-dot" title="Fokus">★</span>{% endif %}
-                      {{ task.title }}
+                      <a href="/tasks/{{ task.id }}">{{ task.title }}</a>
                     </div>
                     <details class="pm-description"><summary>Details öffnen</summary><p>{{ task.description or 'Keine Beschreibung.' }}</p><p class="muted">Erstellt: {{ task.created_at }}</p></details>
                     {% if task.deadline %}<div class="chip {% if task.deadline < today and task.status != 'done' %}pm-overdue{% endif %}">Deadline: {{ task.deadline }}</div>{% endif %}
                     {% if task.completed_at %}<div class="task-sub">Abgeschlossen: {{ task.completed_at }}</div>{% endif %}
+
+                    <details class="pm-comments">
+                      <summary>Kommentare ({{ task_comments|length }})</summary>
+                      {% if task_comments %}
+                        <ul class="comment-list">
+                          {% for c in task_comments %}
+                            <li>
+                              <p class="comment-text">{{ c.content }}</p>
+                              <p class="muted comment-meta">
+                                {{ c.author_current if c.author_current else c.author_name }}{% if not c.author_current %} (ehemalig){% endif %} · {{ c.created_at }}
+                              </p>
+                            </li>
+                          {% endfor %}
+                        </ul>
+                      {% else %}
+                        <p class="muted">Noch keine Kommentare.</p>
+                      {% endif %}
+                      <form method="post" action="/tasks/{{ task.id }}/comments" class="comment-form">
+                        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                        <input type="hidden" name="project_id" value="{{ active_project.id }}">
+                        <input type="hidden" name="view" value="{{ project_view }}">
+                        <textarea name="content" rows="2" placeholder="Kommentar schreiben …" required></textarea>
+                        <button type="submit" class="button-small secondary">Kommentieren</button>
+                      </form>
+                    </details>
+
+                    <details class="pm-activity">
+                      <summary>Aktivität ({{ task_events|length }})</summary>
+                      {% if task_events %}
+                        <ul class="activity-list">
+                          {% for e in task_events %}
+                            <li>
+                              <span class="muted activity-meta">
+                                {{ e.actor_current if e.actor_current else e.actor_name }}{% if not e.actor_current %} (ehemalig){% endif %} · {{ e.created_at }}
+                              </span>
+                              <span class="activity-type">
+                                {% if e.event_type == 'task_created' %}Aufgabe angelegt{% elif e.event_type == 'status_changed' %}Status geändert{% elif e.event_type == 'task_reopened' %}Wiedergeöffnet{% elif e.event_type == 'title_changed' %}Titel geändert{% elif e.event_type == 'description_changed' %}Beschreibung geändert{% elif e.event_type == 'deadline_changed' %}Deadline geändert{% elif e.event_type == 'focus_changed' %}Fokus geändert{% elif e.event_type == 'assignee_changed' %}Zuständigkeit geändert{% elif e.event_type == 'attachment_added' %}Anhang hinzugefügt{% else %}{{ e.event_type }}{% endif %}
+                              </span>
+                              {% if e.event_type == 'status_changed' or e.event_type == 'task_reopened' %}
+                                <span class="activity-values">{{ e.old_value }} → {{ e.new_value }}</span>
+                              {% elif e.event_type in ['title_changed', 'description_changed', 'deadline_changed'] %}
+                                <span class="activity-values">{{ e.old_value or '-' }} → {{ e.new_value or '-' }}</span>
+                              {% elif e.event_type == 'focus_changed' %}
+                                <span class="activity-values">{{ 'Fokus an' if e.new_value == '1' else 'Fokus aus' }}</span>
+                              {% elif e.event_type == 'assignee_changed' %}
+                                <span class="activity-values">{{ e.old_value or 'kein Zuständiger' }} → {{ e.new_value or 'kein Zuständiger' }}</span>
+                              {% elif e.event_type == 'attachment_added' %}
+                                <span class="activity-values">{{ e.new_value }}</span>
+                              {% endif %}
+                            </li>
+                          {% endfor %}
+                        </ul>
+                      {% else %}
+                        <p class="muted">Noch keine Aktivitäten.</p>
+                      {% endif %}
+                    </details>
+
+                    <details class="pm-checklist">
+                      <summary>Checkliste ({{ task_checklist|length }})</summary>
+                      {% if task_checklist %}
+                        <ul class="checklist-list">
+                          {% for item in task_checklist %}
+                            <li class="{% if item.done %}is-done{% endif %}">
+                              <form method="post" action="/checklist/{{ item.id }}/toggle" class="checklist-toggle">
+                                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                                <input type="hidden" name="project_id" value="{{ active_project.id }}">
+                                <input type="hidden" name="view" value="{{ project_view }}">
+                                <button type="submit" class="button-small secondary">{% if item.done %}✓{% else %}○{% endif %}</button>
+                              </form>
+                              <span>{{ item.content }}</span>
+                            </li>
+                          {% endfor %}
+                        </ul>
+                      {% else %}
+                        <p class="muted">Noch keine Checklistenpunkte.</p>
+                      {% endif %}
+                      <form method="post" action="/tasks/{{ task.id }}/checklist" class="comment-form">
+                        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                        <input type="hidden" name="project_id" value="{{ active_project.id }}">
+                        <input type="hidden" name="view" value="{{ project_view }}">
+                        <input type="text" name="content" placeholder="Neuer Punkt …" required>
+                        <button type="submit" class="button-small secondary">Hinzufügen</button>
+                      </form>
+                    </details>
+
+                    {% if task_dependencies %}
+                      <div class="dependency-hint">
+                        <span class="muted">Blockiert durch:</span>
+                        {% for dep in task_dependencies %}
+                          <span class="chip {% if dep.blocking_status == 'done' %}chip-done{% elif dep.blocking_status == 'in_progress' %}chip-progress{% else %}chip-open{% endif %}">{{ dep.blocking_title }} ({{ dep.blocking_status }})</span>
+                        {% endfor %}
+                      </div>
+                    {% endif %}
+                    <form method="post" action="/tasks/{{ task.id }}/dependencies" class="dependency-form">
+                      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                      <input type="hidden" name="project_id" value="{{ active_project.id }}">
+                      <input type="hidden" name="view" value="{{ project_view }}">
+                      <select name="depends_on_task_id" required>
+                        {% for other in dependency_options %}
+                          {% if other.id != task.id %}<option value="{{ other.id }}">{{ other.title }}</option>{% endif %}
+                        {% endfor %}
+                      </select>
+                      <button type="submit" class="button-small secondary">Abhängigkeit</button>
+                    </form>
                   </td>
                   <td>
                     {% if task.status == 'open' %}<span class="chip chip-open">offen</span>{% endif %}
                     {% if task.status == 'in_progress' %}<span class="chip chip-progress">in Arbeit</span>{% endif %}
                     {% if task.status == 'done' %}<span class="chip chip-done">erledigt</span>{% endif %}
+                    {% if task.priority == 'high' %}<span class="chip chip-priority">hoch</span>{% endif %}
+                    {% if task.priority == 'low' %}<span class="chip chip-priority-low">niedrig</span>{% endif %}
+                    {% if task.recurrence %}<span class="chip">↻ {{ task.recurrence }}</span>{% endif %}
                   </td>
                   <td>{{ task.assignee_name or '-' }}</td>
                   <td>
@@ -267,6 +525,29 @@
                           {% endfor %}
                         </select>
 
+                        <label>Priorität</label>
+                        <select name="priority">
+                          <option value="normal" {% if task.priority == 'normal' %}selected{% endif %}>normal</option>
+                          <option value="low" {% if task.priority == 'low' %}selected{% endif %}>niedrig</option>
+                          <option value="high" {% if task.priority == 'high' %}selected{% endif %}>hoch</option>
+                        </select>
+
+                        <label>Wiederholung</label>
+                        <select name="recurrence">
+                          <option value="" {% if not task.recurrence %}selected{% endif %}>keine</option>
+                          <option value="daily" {% if task.recurrence == 'daily' %}selected{% endif %}>täglich</option>
+                          <option value="weekly" {% if task.recurrence == 'weekly' %}selected{% endif %}>wöchentlich</option>
+                          <option value="monthly" {% if task.recurrence == 'monthly' %}selected{% endif %}>monatlich</option>
+                        </select>
+
+                        <label>Meilenstein</label>
+                        <select name="milestone_id">
+                          <option value="" {% if not task.milestone_id %}selected{% endif %}>-</option>
+                          {% for m in milestones %}
+                            <option value="{{ m.id }}" {% if task.milestone_id == m.id %}selected{% endif %}>{{ m.name }}</option>
+                          {% endfor %}
+                        </select>
+
                         <label class="inline-check"><input type="checkbox" name="focus" value="1" {% if task.focus %}checked{% endif %}> Fokus</label>
                         <button type="submit" class="button-small">Speichern</button>
                       </form>
@@ -279,7 +560,16 @@
         {% else %}
           <p class="muted">Keine Aufgaben für diesen Filter vorhanden.</p>
         {% endif %}
+
+        {% if total_pages > 1 %}
+          <nav class="pagination" aria-label="Pagination">
+            {% if page > 1 %}<a class="filter-chip" href="/projects?project_id={{ active_project.id }}&view={{ project_view }}&q={{ (q or '')|urlencode }}&page={{ page - 1 }}">← Zurück</a>{% endif %}
+            <span class="muted">Seite {{ page }} von {{ total_pages }} · {{ total_tasks }} Aufgaben</span>
+            {% if page < total_pages %}<a class="filter-chip" href="/projects?project_id={{ active_project.id }}&view={{ project_view }}&q={{ (q or '')|urlencode }}&page={{ page + 1 }}">Weiter →</a>{% endif %}
+          </nav>
+        {% endif %}
       </section>
+      {% endif %}
 
       <details class="card">
         <summary>Team &amp; Freigaben ({{ members|length }})</summary>

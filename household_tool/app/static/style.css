@@ -32,6 +32,41 @@
 .pm-workspace progress { width: 100%; accent-color: var(--primary); }
 .pm-workspace .project-header-meta { min-width: 170px; }
 .pm-workspace .pm-description p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.pm-workspace .comment-list, .pm-workspace .activity-list { list-style: none; margin: .5rem 0; padding: 0; }
+.pm-workspace .comment-list li, .pm-workspace .activity-list li { padding: .45rem .55rem; margin: .4rem 0; border-left: 3px solid var(--border); background: var(--surface-2); border-radius: 6px; }
+.pm-workspace .comment-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 .25rem; }
+.pm-workspace .comment-meta, .pm-workspace .activity-meta { font-size: .78rem; margin: 0; }
+.pm-workspace .comment-form textarea { width: 100%; margin: .4rem 0; }
+.pm-workspace .activity-type { font-weight: 700; color: var(--text); }
+.pm-workspace .activity-values { display: block; font-size: .82rem; color: var(--muted); overflow-wrap: anywhere; }
+.pm-workspace .activity-list li { display: grid; gap: .15rem; }
+.pm-workspace .chip-priority { background: var(--danger-bg); color: var(--danger-text); }
+.pm-workspace .chip-priority-low { background: var(--shared-bg); color: var(--shared-text); }
+.pm-workspace .my-tasks .task-title a { color: var(--primary-dark); text-decoration: none; }
+.pm-workspace .my-tasks .task-title a:hover { text-decoration: underline; }
+.pm-workspace .kanban-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
+.pm-workspace .kanban-column { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: .8rem; }
+.pm-workspace .kanban-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: .7rem; margin: .6rem 0; display: grid; gap: .4rem; }
+.pm-workspace .kanban-card form { display: inline-block; margin-right: .4rem; }
+.pm-workspace .calendar-nav { display: flex; align-items: center; justify-content: space-between; gap: .6rem; flex-wrap: wrap; margin-bottom: .8rem; }
+.pm-workspace .calendar-grid { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.pm-workspace .calendar-grid th, .pm-workspace .calendar-grid td { border: 1px solid var(--border); vertical-align: top; min-height: 90px; padding: .35rem; }
+.pm-workspace .calendar-grid td { height: 96px; overflow: hidden; }
+.pm-workspace .calendar-day { display: block; font-weight: 700; margin-bottom: .25rem; }
+.pm-workspace .calendar-task { display: block; font-size: .78rem; color: var(--primary-dark); text-decoration: none; overflow-wrap: anywhere; margin: .1rem 0; }
+.pm-workspace .calendar-task:hover { text-decoration: underline; }
+.pm-workspace .calendar-outside { background: #fafbfc; color: var(--muted); }
+.pm-workspace .checklist-list { list-style: none; margin: .5rem 0; padding: 0; }
+.pm-workspace .checklist-list li { display: flex; align-items: center; gap: .45rem; padding: .3rem 0; border-bottom: 1px dashed var(--border); }
+.pm-workspace .checklist-list li.is-done span { text-decoration: line-through; color: var(--muted); }
+.pm-workspace .checklist-toggle { margin: 0; }
+.pm-workspace .milestone-list { list-style: none; margin: .5rem 0; padding: 0; }
+.pm-workspace .milestone-list li { padding: .35rem 0; border-bottom: 1px dashed var(--border); }
+.pm-workspace .dependency-hint { margin: .5rem 0; display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }
+.pm-workspace .dependency-form { display: flex; gap: .4rem; margin: .5rem 0; flex-wrap: wrap; }
+.pm-workspace .pagination { display: flex; align-items: center; gap: .6rem; margin-top: .8rem; flex-wrap: wrap; }
+.pm-workspace .task-search-form { display: flex; align-items: center; gap: .5rem; margin: .5rem 0 1rem; flex-wrap: wrap; }
+.pm-workspace .task-detail-nav { margin-bottom: 1rem; }
 .pm-workspace .pm-overdue { color: var(--danger-text); background: var(--danger-bg); }
 .pm-workspace #task-search { margin: .5rem 0 1rem; }
 .pm-workspace .project-main > .card > table:has([data-task-search]) thead { display: none; }
@@ -1080,3 +1115,15 @@ body.has-modal-open {
     justify-content: flex-start;
   }
 }
+
+/* A compact agenda replaces the month table on narrow screens. */
+.calendar-agenda { display: none; }
+.calendar-agenda-day { padding: .8rem 0; border-bottom: 1px solid var(--border); }
+.calendar-agenda-day h4 { margin: 0 0 .5rem; color: var(--primary-dark); }
+.calendar-agenda-day a { display: block; padding: .65rem; margin: .3rem 0; border-radius: 8px; background: #edf8f6; overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .pm-workspace .calendar-grid { display: none; }
+  .calendar-agenda { display: block; }
+}
+.calendar-agenda-day a, .pm-workspace .task-title a { color: var(--primary-dark); text-decoration: none; }
+.calendar-agenda-day a:hover, .pm-workspace .task-title a:hover { text-decoration: underline; }

@@ -118,3 +118,10 @@ JSON
 docker run --rm -p 8099:8099 -v "$(pwd)/local-data:/data" household-tool-addon
 ```
 Dann aufrufen: `http://localhost:8099`
+
+## Version 0.7.0
+
+Projektmanagement-Erweiterungen, optionale HA-Erinnerungen und Release-Abnahme:
+[Release 0.7.0](docs/project-wiki/release-0.7.0.md).
+Vor dem Update ein Add-on-Backup inklusive Daten erstellen. Erinnerungen sind
+standardmaessig deaktiviert und benoetigen eine explizite Admin-Zielzuordnung.

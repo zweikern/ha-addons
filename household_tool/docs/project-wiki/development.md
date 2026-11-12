@@ -26,9 +26,18 @@ Projektanlage, Aufgabenanlage, ungueltiges Datum, Anhang, Abschluss,
 Historien-Rendering, Wiederoeffnen. Keine produktiven Zugangsdaten.
 Die bestehenden Musiktests muessen weiterhin bestehen.
 
+Neu hinzugekommen (DeepSeek-Etappen, 36 Tests): `test_project_comments.py`,
+`test_project_http_comments.py`, `test_project_kanban_calendar.py`,
+`test_project_my_tasks.py`, `test_project_milestones.py`,
+`test_project_recurrence.py`, `test_project_scaling.py`, `test_reminders.py`.
+`test_reminders.py` nutzt einen simulierten HA-Endpunkt (keine echte Nachricht).
+Nach dem Codex-Review: `test_review_fixes.py` (7 Regressionstests fuer die
+P1/P2-Befunde). Mit `test_release.py` und der 0.6.0-Schemafixture: 52 Tests.
+
 Manueller Abnahmetest im Browser: Desktop und Smartphone, lange Titel,
 leere Projekte, Suche, alle Filter, mehrere Mitglieder, Datum entfernen,
-Historie mit Anhang, Tastaturbedienung der aufklappbaren Bereiche.
+Historie mit Anhang, Tastaturbedienung der aufklappbaren Bereiche,
+Kanban/Kalender, Kommentare/Aktivitaet, Checkliste, Vorlagen, Pagination.
 
 ## Release / Home Assistant
 
@@ -49,7 +58,4 @@ pruefen. Keine echten Passwoerter in Logs, Tests oder Dokumentation uebernehmen.
 
 Benutzerloeschung weist Projekte und Uploads einem anderen Benutzer zu.
 Die Folgen fuer Eigentum und Speicherkontingent vor Aenderungen beachten.
-SQLite-Connections werden vielerorts ueber `with connection` benutzt; dies
-beendet Transaktionen, schliesst aber die Connection nicht explizit. Neuere
-Python-Versionen melden deshalb ResourceWarnings. Eine zentrale Korrektur
-sollte alle Module samt Nebenwirkungen testen.
+SQLite-Verbindungen werden durch den zentralen ManagedConnection-Kontext nach Commit/Rollback geschlossen. ResourceWarnings werden im Release-Test als Fehler behandelt.

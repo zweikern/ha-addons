@@ -40,6 +40,13 @@
       Mail Opt-in aktivieren
     </label>
 
+    <label class="inline-check" for="reminder_opt_in">
+      <input id="reminder_opt_in" name="reminder_opt_in" type="checkbox" value="1" {% if user.reminder_opt_in %}checked{% endif %}>
+      Erinnerungen ueber Home Assistant aktivieren
+    </label>
+
+    <p class="muted">Benachrichtigungsdienst (vom Admin zugeordnet): {{ user.reminder_target or "Noch nicht zugeordnet" }}</p>
+
     <hr>
 
     <label for="current_password">Aktuelles Passwort</label>

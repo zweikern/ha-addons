@@ -20,8 +20,11 @@ und spaeter wieder aufnehmen.
 ## Grenzen und Prioritaeten
 
 Dies ist ein Haushalts-Projektmanagement mit den vorhandenen Funktionen,
-kein Ersatz fuer alle Enterprise-PM-Funktionen. Folgende Erweiterungen sind
-Vorschlaege und wurden nicht als bereits vorhanden ausgegeben:
+kein Ersatz fuer alle Enterprise-PM-Funktionen. Die folgenden sieben
+Erweiterungen wurden in der DeepSeek-Uebergabe implementiert und lokal getestet
+(urspruengliche Ergebnisse: `deepseek-results.md`). Codex hat die Nachbesserungen
+integriert und 0.7.0 vorbereitet. Details und Testgrenzen stehen in
+[Release-Abnahme](release-0.7.0.md).
 
 1. Kommentare und unveraenderliche Aktivitaetschronik: Autor, Zeit, alte/neue
    Werte; getrennt von der Historie aktuell erledigter Aufgaben.
@@ -30,7 +33,7 @@ Vorschlaege und wurden nicht als bereits vorhanden ausgegeben:
 3. Kanban-Ansicht und optionale Kalenderansicht auf derselben Aufgabenbasis;
    Statuswechsel auch ohne Drag-and-drop zugaenglich halten.
 4. Erinnerungen ueber HA-Notifications; pro Nutzer Opt-in, Ruhezeiten und
-   deduplizierte Zustellung. Mail-Opt-in alleine versendet noch nichts.
+   reservierte, begrenzte Zustellversuche. Mail-Opt-in alleine versendet noch nichts.
 5. Wiederkehrende Aufgaben, Checklisten und Vorlagen fuer Haushalt/Routinen.
 6. Meilensteine und Abhaengigkeiten, danach optional Zeit-/Aufwandserfassung.
 7. Pagination und SQL-Aggregate fuer grosse Projekte statt kompletter Listen.
@@ -42,7 +45,7 @@ Vorschlaege und wurden nicht als bereits vorhanden ausgegeben:
 - Deadlines bei Bedarf mit konfigurierbarer Haushaltszeitzone erweitern.
 - Projekt-Unterordner vererben derzeit keine Rechte: Produktentscheidung
   dokumentieren, bevor dies geaendert wird.
-- Download-Header fuer beliebige Unicode-Namen und sichere Inline-Dateitypen
-  pruefen; dies betrifft auch File Sharing und liegt ausserhalb dieses Releases.
-- Ressourcenfreigabe fuer DB-Verbindungen zentral korrigieren.
+- Sichere Inline-Dateitypen weiter einschraenken; Unicode-Download-Header
+  sind in 0.7.0 korrigiert.
+- Kommentare/Aktivitaeten und Abhaengigkeitsauswahl bei sehr grossen Projekten separat paginieren.
 - Vor produktiver Freigabe manuelle Browserabnahme am realen HA durchfuehren.

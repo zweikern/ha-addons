@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+{% block title %}{{ task.title }} | Household Tool{% endblock %}
+{% block content %}
+<div class="pm-workspace task-detail">
+  <nav class="task-detail-nav">
+    <a class="filter-chip" href="/projects?project_id={{ task.project_id }}{% if task.status == 'done' %}&view=history{% endif %}">← {{ task.project_name }}</a>
+  </nav>
+
+  <header class="card project-header">
+    <div>
+      <h2>{% if task.focus %}<span class="focus-dot" title="Fokus">★</span>{% endif %} {{ task.title }}</h2>
+      <p>{{ task.description or 'Keine Beschreibung.' }}</p>
+    </div>
+    <div class="project-header-meta">
+      {% if task.status == 'open' %}<span class="chip chip-open">offen</span>{% endif %}
+      {% if task.status == 'in_progress' %}<span class="chip chip-progress">in Arbeit</span>{% endif %}
+      {% if task.status == 'done' %}<span class="chip chip-done">erledigt</span>{% endif %}
+      {% if task.priority == 'high' %}<span class="chip chip-priority">hoch</span>{% endif %}
+      {% if task.priority == 'low' %}<span class="chip chip-priority-low">niedrig</span>{% endif %}
+      {% if task.recurrence %}<span class="chip">↻ {{ task.recurrence }}</span>{% endif %}
+      {% if task.deadline %}<span class="chip {% if task.deadline < today and task.status != 'done' %}pm-overdue{% endif %}">Deadline: {{ task.deadline }}</span>{% endif %}
+      {% if task.milestone_name %}<span class="chip">Meilenstein: {{ task.milestone_name }}</span>{% endif %}
+      <span class="muted">Zuständig: {{ task.assignee_name or '-' }}</span>
+      <span class="muted">Erstellt: {{ task.created_at }}</span>
+      {% if task.completed_at %}<span class="muted">Abgeschlossen: {{ task.completed_at }}</span>{% endif %}
+    </div>
+  </header>
+
+  <section class="card">
+    <div class="task-actions">
+      {% if task.status != 'open' %}
+        <form method="post" action="/tasks/{{ task.id }}/status">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="project_id" value="{{ task.project_id }}">
+          <input type="hidden" name="view" value="all">
+          <input type="hidden" name="status" value="open">
+          <button type="submit" class="button-small">Offen</button>
+        </form>
+      {% endif %}
+      {% if task.status != 'in_progress' %}
+        <form method="post" action="/tasks/{{ task.id }}/status">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="project_id" value="{{ task.project_id }}">
+          <input type="hidden" name="view" value="all">
+          <input type="hidden" name="status" value="in_progress">
+          <button type="submit" class="button-small secondary">In Arbeit</button>
+        </form>
+      {% endif %}
+      {% if task.status != 'done' %}
+        <form method="post" action="/tasks/{{ task.id }}/status">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="project_id" value="{{ task.project_id }}">
+          <input type="hidden" name="view" value="all">
+          <input type="hidden" name="status" value="done">
+          <button type="submit" class="button-small done">Erledigt</button>
+        </form>
+      {% endif %}
+    </div>
+
+    {% if dependencies %}
+      <div class="dependency-hint">
+        <span class="muted">Blockiert durch:</span>
+        {% for dep in dependencies %}
+          <span class="chip {% if dep.blocking_status == 'done' %}chip-done{% elif dep.blocking_status == 'in_progress' %}chip-progress{% else %}chip-open{% endif %}">{{ dep.blocking_title }} ({{ dep.blocking_status }})</span>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+
+  <details class="card">
+    <summary>Bearbeiten</summary>
+    <form method="post" action="/tasks/{{ task.id }}/edit" class="form-grid compact-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="hidden" name="project_id" value="{{ task.project_id }}">
+      <input type="hidden" name="view" value="all">
+
+      <label>Titel</label>
+      <input name="title" value="{{ task.title }}" required>
+
+      <label>Beschreibung</label>
+      <textarea name="description" rows="3">{{ task.description }}</textarea>
+
+      <label>Status</label>
+      <select name="status">
+        <option value="open" {% if task.status == 'open' %}selected{% endif %}>offen</option>
+        <option value="in_progress" {% if task.status == 'in_progress' %}selected{% endif %}>in Arbeit</option>
+        <option value="done" {% if task.status == 'done' %}selected{% endif %}>erledigt</option>
+      </select>
+
+      <label>Priorität</label>
+      <select name="priority">
+        <option value="normal" {% if task.priority == 'normal' %}selected{% endif %}>normal</option>
+        <option value="low" {% if task.priority == 'low' %}selected{% endif %}>niedrig</option>
+        <option value="high" {% if task.priority == 'high' %}selected{% endif %}>hoch</option>
+      </select>
+
+      <label>Wiederholung</label>
+      <select name="recurrence">
+        <option value="" {% if not task.recurrence %}selected{% endif %}>keine</option>
+        <option value="daily" {% if task.recurrence == 'daily' %}selected{% endif %}>täglich</option>
+        <option value="weekly" {% if task.recurrence == 'weekly' %}selected{% endif %}>wöchentlich</option>
+        <option value="monthly" {% if task.recurrence == 'monthly' %}selected{% endif %}>monatlich</option>
+      </select>
+
+      <label>Meilenstein</label>
+      <select name="milestone_id">
+        <option value="" {% if not task.milestone_id %}selected{% endif %}>-</option>
+        {% for m in milestones %}
+          <option value="{{ m.id }}" {% if task.milestone_id == m.id %}selected{% endif %}>{{ m.name }}</option>
+        {% endfor %}
+      </select>
+
+      <label>Deadline</label>
+      <input type="date" name="deadline" value="{{ task.deadline or '' }}">
+
+      <label>Zuständig</label>
+      <select name="assignee_id">
+        <option value="">-</option>
+        {% for account in task_assignees %}
+          <option value="{{ account.id }}" {% if task.assignee_id == account.id %}selected{% endif %}>{{ account.username }}</option>
+        {% endfor %}
+      </select>
+
+      <label class="inline-check"><input type="checkbox" name="focus" value="1" {% if task.focus %}checked{% endif %}> Fokus</label>
+      <button type="submit" class="button-small">Speichern</button>
+    </form>
+  </details>
+
+  <details class="card">
+    <summary>Checkliste ({{ checklist|length }})</summary>
+    {% if checklist %}
+      <ul class="checklist-list">
+        {% for item in checklist %}
+          <li class="{% if item.done %}is-done{% endif %}">
+            <form method="post" action="/checklist/{{ item.id }}/toggle" class="checklist-toggle">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="project_id" value="{{ task.project_id }}">
+              <input type="hidden" name="view" value="all">
+              <button type="submit" class="button-small secondary">{% if item.done %}✓{% else %}○{% endif %}</button>
+            </form>
+            <span>{{ item.content }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Noch keine Checklistenpunkte.</p>
+    {% endif %}
+    <form method="post" action="/tasks/{{ task.id }}/checklist" class="comment-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="hidden" name="project_id" value="{{ task.project_id }}">
+      <input type="hidden" name="view" value="all">
+      <input type="text" name="content" placeholder="Neuer Punkt …" required>
+      <button type="submit" class="button-small secondary">Hinzufügen</button>
+    </form>
+  </details>
+
+  <details class="card">
+    <summary>Kommentare ({{ comments|length }})</summary>
+    {% if comments %}
+      <ul class="comment-list">
+        {% for c in comments %}
+          <li>
+            <p class="comment-text">{{ c.content }}</p>
+            <p class="muted comment-meta">{{ c.author_current if c.author_current else c.author_name }}{% if not c.author_current %} (ehemalig){% endif %} · {{ c.created_at }}</p>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Noch keine Kommentare.</p>
+    {% endif %}
+    <form method="post" action="/tasks/{{ task.id }}/comments" class="comment-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="hidden" name="project_id" value="{{ task.project_id }}">
+      <input type="hidden" name="view" value="all">
+      <textarea name="content" rows="2" placeholder="Kommentar schreiben …" required></textarea>
+      <button type="submit" class="button-small secondary">Kommentieren</button>
+    </form>
+  </details>
+
+  <details class="card">
+    <summary>Anhänge ({{ attachments|length }})</summary>
+    {% if attachments %}
+      <ul class="attachment-list">
+        {% for a in attachments %}
+          <li><a href="/attachments/{{ a.id }}/download">{{ a.filename }}</a> <span class="muted">({{ a.size }} B)</span></li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Keine Anhänge.</p>
+    {% endif %}
+    <form method="post" action="/tasks/{{ task.id }}/attachments" enctype="multipart/form-data" class="attachment-upload">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="hidden" name="project_id" value="{{ task.project_id }}">
+      <input type="hidden" name="view" value="all">
+      <input type="file" name="file" required>
+      <button type="submit" class="button-small secondary">Upload</button>
+    </form>
+    <div class="muted">Max {{ max_attachment_mb }} MB</div>
+  </details>
+
+  <details class="card">
+    <summary>Aktivität ({{ events|length }})</summary>
+    {% if events %}
+      <ul class="activity-list">
+        {% for e in events %}
+          <li>
+            <span class="muted activity-meta">{{ e.actor_current if e.actor_current else e.actor_name }}{% if not e.actor_current %} (ehemalig){% endif %} · {{ e.created_at }}</span>
+            <span class="activity-type">
+              {% if e.event_type == 'task_created' %}Aufgabe angelegt{% elif e.event_type == 'status_changed' %}Status geändert{% elif e.event_type == 'task_reopened' %}Wiedergeöffnet{% elif e.event_type == 'title_changed' %}Titel geändert{% elif e.event_type == 'description_changed' %}Beschreibung geändert{% elif e.event_type == 'deadline_changed' %}Deadline geändert{% elif e.event_type == 'focus_changed' %}Fokus geändert{% elif e.event_type == 'priority_changed' %}Priorität geändert{% elif e.event_type == 'recurrence_changed' %}Wiederholung geändert{% elif e.event_type == 'milestone_changed' %}Meilenstein geändert{% elif e.event_type == 'assignee_changed' %}Zuständigkeit geändert{% elif e.event_type == 'attachment_added' %}Anhang hinzugefügt{% else %}{{ e.event_type }}{% endif %}
+            </span>
+            {% if e.event_type in ['status_changed', 'task_reopened', 'title_changed', 'description_changed', 'deadline_changed', 'assignee_changed'] %}
+              <span class="activity-values">{{ e.old_value or '-' }} → {{ e.new_value or '-' }}</span>
+            {% elif e.event_type == 'focus_changed' %}
+              <span class="activity-values">{{ 'Fokus an' if e.new_value == '1' else 'Fokus aus' }}</span>
+            {% elif e.event_type == 'attachment_added' %}
+              <span class="activity-values">{{ e.new_value }}</span>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Noch keine Aktivitäten.</p>
+    {% endif %}
+  </details>
+</div>
+{% endblock %}

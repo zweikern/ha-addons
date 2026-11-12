@@ -1,6 +1,6 @@
 # Home Assistant Add-ons: Projekt-Wiki
 
-Stand: 11. November 2026. Repository: `zweikern/ha-addons`.
+Stand: 12. November 2026. Repository: `zweikern/ha-addons`.
 Dieses versionierte Wiki ist der Einstieg fuer Menschen und weitere Agenten.
 Es lag zuvor kein Wiki im lokalen Repository vor. Ein eventuell separat
 gehostetes GitHub-Wiki wurde nicht geprueft.
@@ -8,7 +8,7 @@ gehostetes GitHub-Wiki wurde nicht geprueft.
 ## Orientierung
 
 - `repository.yaml`: Home-Assistant-Repository-Metadaten.
-- `household_tool/`: Household-Plattform, Port 8099, aktuell Version 0.6.0.
+- `household_tool/`: Household-Plattform, Port 8099, Version 0.7.0.
 - `downtime/`: separates Add-on fuer Ausfallprotokollierung. Eigener Entwicklungsbereich.
 - [Projekte: Produkt, Architektur und Daten](projects.md)
 - [Entwicklung, Tests und Betrieb](development.md)
@@ -45,3 +45,8 @@ Tests dazu befinden sich unter `tests/test_music_*.py`.
 
 Die Version 0.6.0 erweitert Aufgaben um Deadlines, vollstaendige Historie,
 Wiederoeffnen, anklickbare Tagesfilter und eine aufgeraeumte Projektoberflaeche.
+
+Neu in 0.7.0 (Abschlussbericht: [Release-Abnahme](release-0.7.0.md)): Kommentare und
+Aktivitaetsverlauf, "Meine Aufgaben" mit Prioritaeten, Kanban/Kalender,
+HA-Erinnerungen (standardmaessig deaktiviert), Wiederholungen/Checklisten/Vorlagen,
+Meilensteine/Abhaengigkeiten sowie Pagination und SQL-Aggregate.
